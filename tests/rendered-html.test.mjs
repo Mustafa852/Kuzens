@@ -25,6 +25,16 @@ const [
   nextConfig,
   auraRoute,
   schemaSource,
+  directMessagesRoute,
+  channelStateRoute,
+  auditLogRoute,
+  eventsRoute,
+  autoModRoute,
+  autoModSource,
+  bookmarksRoute,
+  pollsRoute,
+  threadsRoute,
+  serverGuideRoute,
 ] =
   await Promise.all([
     readFile(new URL("../app/KuzensApp.tsx", import.meta.url), "utf8"),
@@ -49,6 +59,16 @@ const [
     readFile(new URL("../next.config.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/aura/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/direct-messages/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/channel-state/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/audit-log/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/events/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/automod/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/automod.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/bookmarks/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/polls/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/threads/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/server-guide/route.ts", import.meta.url), "utf8"),
   ]);
 
 test("keeps the application fixed to the viewport", () => {
@@ -79,7 +99,7 @@ test("scrolls messages inside their own panel", () => {
 
 test("uses the finished Kuzens interface instead of starter content", () => {
   assert.match(layoutSource, /Kuzens/);
-  assert.match(appSource, /className="app-shell"/);
+  assert.match(appSource, /className=\{`app-shell/);
   assert.doesNotMatch(appSource, /SkeletonPreview|codex-preview/);
   assert.doesNotMatch(packageSource, /react-loading-skeleton/);
 });
@@ -102,6 +122,14 @@ test("enforces server-side request and abuse protections", () => {
     notificationsRoute,
     profileRoute,
     auraRoute,
+    directMessagesRoute,
+    channelStateRoute,
+    eventsRoute,
+    autoModRoute,
+    bookmarksRoute,
+    pollsRoute,
+    threadsRoute,
+    serverGuideRoute,
   ]) {
     assert.match(route, /assertTrustedMutation\(request\)/);
     assert.match(route, /enforceRateLimit/);
@@ -158,6 +186,150 @@ test("ships owner-managed Kuzens Aura codes without storing plaintext codes", ()
   assert.match(auraRoute, /action === "create-code"/);
   assert.match(auraRoute, /action === "grant"/);
   assert.doesNotMatch(schemaSource, /plainCode|plain_code/);
+});
+
+test("adds private direct messages with server-side privacy and ownership checks", () => {
+  assert.match(schemaSource, /directConversations/);
+  assert.match(schemaSource, /directMessages/);
+  assert.match(schemaSource, /directMessageSettings/);
+  assert.match(directMessagesRoute, /requireConversationMember/);
+  assert.match(directMessagesRoute, /status === "blocked"/);
+  assert.match(directMessagesRoute, /Yalnızca arkadaşlar|yalnızca arkadaşlarından/);
+  assert.match(directMessagesRoute, /message\.authorProfileId !== profile\.id/);
+  assert.match(schemaSource, /directConversationReads/);
+  assert.match(schemaSource, /directMessageRequests/);
+  assert.match(directMessagesRoute, /action === "read"/);
+  assert.match(directMessagesRoute, /action === "request"/);
+  assert.match(directMessagesRoute, /en fazla iki mesaj/);
+  assert.match(directMessagesRoute, /unreadCount/);
+  assert.match(directMessagesRoute, /orderBy\(desc\(directMessages\.createdAt\)\)/);
+  assert.match(appSource, /className="modal-card direct-modal"/);
+  assert.match(appSource, /className="rail-unread"/);
+  assert.match(appSource, /className="direct-request-gate"/);
+});
+
+test("supports advanced search, accessibility controls, and push-to-talk", () => {
+  assert.match(appSource, /function matchesSearch/);
+  assert.match(appSource, /from:/);
+  assert.match(appSource, /has:link/);
+  assert.match(appSource, /is:pinned/);
+  assert.match(appSource, /kuzens-preferences/);
+  assert.match(appSource, /kuzens-drafts/);
+  assert.match(appSource, /preferences\.pushToTalk/);
+  assert.match(appSource, /event\.code === "Space"/);
+  assert.match(appStyles, /\.app-shell\.high-contrast/);
+  assert.match(appStyles, /\.app-shell\.reduce-motion/);
+});
+
+test("separates channel notifications from unread indicators", () => {
+  assert.match(schemaSource, /channelNotificationSettings/);
+  assert.match(schemaSource, /channelReads/);
+  assert.match(channelStateRoute, /action === "read"/);
+  assert.match(channelStateRoute, /action === "settings"/);
+  assert.match(channelStateRoute, /showUnread/);
+  assert.match(appSource, /channel-notification-modal/);
+  assert.match(appSource, /notificationLevel/);
+  assert.match(appSource, /mention-badge/);
+});
+
+test("shows protected moderation audit history", () => {
+  assert.match(auditLogRoute, /permissionsFor/);
+  assert.match(auditLogRoute, /moderationPermissions/);
+  assert.match(auditLogRoute, /auditLogs/);
+  assert.match(appSource, /className="modal-card audit-modal"/);
+});
+
+test("provides recurring community events, RSVP reminders, and calendar export", () => {
+  assert.match(schemaSource, /communityEvents/);
+  assert.match(schemaSource, /eventRsvps/);
+  assert.match(eventsRoute, /occurrencesFor/);
+  assert.match(eventsRoute, /recurrence === "weekly"/);
+  assert.match(eventsRoute, /reminderMinutes/);
+  assert.match(eventsRoute, /requireMember/);
+  assert.match(eventsRoute, /PERMISSIONS\.manageServer/);
+  assert.match(appSource, /className="modal-card events-modal"/);
+  assert.match(appSource, /BEGIN:VCALENDAR/);
+  assert.match(appSource, /Katılacağım/);
+});
+
+test("blocks abusive messages with configurable and auditable AutoMod rules", () => {
+  assert.match(schemaSource, /serverAutoModerationSettings/);
+  assert.match(autoModRoute, /requirePermission\(profile, PERMISSIONS\.manageServer/);
+  assert.match(autoModRoute, /exemptChannelIds/);
+  assert.match(autoModSource, /mention-limit/);
+  assert.match(autoModSource, /external-invite/);
+  assert.match(autoModSource, /duplicate-spam/);
+  assert.match(autoModSource, /custom-keyword/);
+  assert.match(autoModSource, /automod\.block/);
+  assert.match(messagesRoute, /checkAutoModeration/);
+  assert.match(appSource, /className="modal-card automod-modal"/);
+});
+
+test("ships saved-message reminders and device-level voice personalization", () => {
+  assert.match(schemaSource, /messageBookmarks/);
+  assert.match(bookmarksRoute, /requireMember\(identity, message\.serverId\)/);
+  assert.match(bookmarksRoute, /reminderDue/);
+  assert.match(appSource, /Sonra için kaydet/);
+  assert.match(appSource, /className="modal-card bookmarks-modal"/);
+  assert.match(appSource, /kuzens-member-volumes/);
+  assert.match(appSource, /preferences\.noiseSuppression/);
+  assert.match(appSource, /preferences\.echoCancellation/);
+  assert.match(appSource, /className="member-volume"/);
+});
+
+test("treats user blocks as a channel, notification, and DM boundary", () => {
+  assert.match(messagesRoute, /blockedAuthor/);
+  assert.match(messagesRoute, /blockedProfileIdsFor/);
+  assert.match(notificationsRoute, /blockedProfileIds/);
+  assert.match(directMessagesRoute, /requireConversationUnblocked/);
+  assert.match(directMessagesRoute, /blockedProfileIds/);
+  assert.match(appSource, /blocked-message-reveal/);
+});
+
+test("adds bot-free polls with scoped voting and duplicate-vote protection", () => {
+  assert.match(schemaSource, /export const polls/);
+  assert.match(schemaSource, /pollOptions/);
+  assert.match(schemaSource, /pollVotes/);
+  assert.match(pollsRoute, /requireMember/);
+  assert.match(pollsRoute, /checkAutoModeration/);
+  assert.match(pollsRoute, /allowMultiple/);
+  assert.match(pollsRoute, /Bu anket sona erdi/);
+  assert.match(messagesRoute, /totalVotes/);
+  assert.match(appSource, /function PollCard/);
+  assert.match(appSource, /className="modal-card poll-modal"/);
+});
+
+test("keeps message threads persistent, scoped, and moderation-aware", () => {
+  assert.match(schemaSource, /messageThreads/);
+  assert.match(schemaSource, /threadMessages/);
+  assert.match(threadsRoute, /requireMember/);
+  assert.match(threadsRoute, /checkAutoModeration/);
+  assert.match(threadsRoute, /row\.thread\.locked \|\| row\.thread\.archived/);
+  assert.match(threadsRoute, /PERMISSIONS\.manageMessages/);
+  assert.match(messagesRoute, /replyCount/);
+  assert.match(appSource, /className="thread-chip"/);
+  assert.match(appSource, /className="modal-card thread-modal"/);
+});
+
+test("supports accessible channel ordering, favorites, and complete deletion cleanup", () => {
+  assert.match(appSource, /kuzens-favorite-channels/);
+  assert.match(appSource, /FAVORİLERİM/);
+  assert.match(appSource, /async function reorderChannel/);
+  assert.match(appSource, /Yukarı taşı/);
+  assert.match(serversRoute, /messageBookmarks/);
+  assert.match(serversRoute, /threadMessages/);
+  assert.match(serversRoute, /pollVotes/);
+  assert.match(serversRoute, /eventRsvps/);
+});
+
+test("provides a permissioned and persistent new-member guide", () => {
+  assert.match(schemaSource, /serverGuides/);
+  assert.match(schemaSource, /serverGuideProgress/);
+  assert.match(serverGuideRoute, /requirePermission\(profile, PERMISSIONS\.manageServer/);
+  assert.match(serverGuideRoute, /GUIDE_STEPS/);
+  assert.match(serverGuideRoute, /completedAt/);
+  assert.match(appSource, /className="modal-card guide-modal"/);
+  assert.match(appSource, /Başlangıç rehberi/);
 });
 
 test("ships an installable shell without caching private application data", () => {

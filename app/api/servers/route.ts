@@ -3,16 +3,29 @@ import {
   auraMemberships,
   auditLogs,
   channels,
+  channelNotificationSettings,
+  channelReads,
+  communityEvents,
+  eventRsvps,
   invites,
   memberRoles,
   messageMentions,
   messageReactions,
+  messageBookmarks,
+  messageThreads,
   messages,
+  pollOptions,
+  polls,
+  pollVotes,
   roles,
   rtcSignals,
   serverBans,
+  serverAutoModerationSettings,
+  serverGuideProgress,
+  serverGuides,
   serverMembers,
   servers,
+  threadMessages,
 } from "@/db/schema";
 import {
   DEFAULT_SERVER_ID,
@@ -204,12 +217,49 @@ export async function DELETE(request: Request) {
         .from(messages)
         .where(inArray(messages.channelId, channelIds));
       const messageIds = messageRows.map((item) => item.id);
+      const [pollRows, threadRows] = await Promise.all([
+        db.select({ id: polls.id }).from(polls).where(inArray(polls.channelId, channelIds)),
+        db
+          .select({ id: messageThreads.id })
+          .from(messageThreads)
+          .where(eq(messageThreads.serverId, id)),
+      ]);
+      const pollIds = pollRows.map((item) => item.id);
+      const threadIds = threadRows.map((item) => item.id);
+      if (pollIds.length) {
+        await db.delete(pollVotes).where(inArray(pollVotes.pollId, pollIds));
+        await db.delete(pollOptions).where(inArray(pollOptions.pollId, pollIds));
+        await db.delete(polls).where(inArray(polls.id, pollIds));
+      }
+      if (threadIds.length) {
+        await db.delete(threadMessages).where(inArray(threadMessages.threadId, threadIds));
+        await db.delete(messageThreads).where(inArray(messageThreads.id, threadIds));
+      }
       if (messageIds.length) {
         await db.delete(messageMentions).where(inArray(messageMentions.messageId, messageIds));
         await db.delete(messageReactions).where(inArray(messageReactions.messageId, messageIds));
+        await db.delete(messageBookmarks).where(inArray(messageBookmarks.messageId, messageIds));
       }
+      await db
+        .delete(channelNotificationSettings)
+        .where(inArray(channelNotificationSettings.channelId, channelIds));
+      await db.delete(channelReads).where(inArray(channelReads.channelId, channelIds));
       await db.delete(messages).where(inArray(messages.channelId, channelIds));
     }
+    const eventRows = await db
+      .select({ id: communityEvents.id })
+      .from(communityEvents)
+      .where(eq(communityEvents.serverId, id));
+    const eventIds = eventRows.map((item) => item.id);
+    if (eventIds.length) {
+      await db.delete(eventRsvps).where(inArray(eventRsvps.eventId, eventIds));
+      await db.delete(communityEvents).where(inArray(communityEvents.id, eventIds));
+    }
+    await db
+      .delete(serverAutoModerationSettings)
+      .where(eq(serverAutoModerationSettings.serverId, id));
+    await db.delete(serverGuideProgress).where(eq(serverGuideProgress.serverId, id));
+    await db.delete(serverGuides).where(eq(serverGuides.serverId, id));
     await db.delete(rtcSignals).where(eq(rtcSignals.serverId, id));
     await db.delete(serverBans).where(eq(serverBans.serverId, id));
     await db.delete(invites).where(eq(invites.serverId, id));

@@ -1,6 +1,6 @@
 import { and, eq, or } from "drizzle-orm";
 import { getDb } from "@/db";
-import { friendships, profiles } from "@/db/schema";
+import { directMessageRequests, friendships, profiles } from "@/db/schema";
 import { requireProfile } from "@/lib/community";
 import {
   apiError,
@@ -127,7 +127,28 @@ export async function POST(request: Request) {
       .from(friendships)
       .where(eq(friendships.id, id))
       .limit(1);
-    if (!existing) return apiJson({ error: "Arkadaşlık kaydı bulunamadı." }, { status: 404 });
+    if (!existing) {
+      if (payload.action === "block") {
+        const [target] = await db
+          .select({ id: profiles.id })
+          .from(profiles)
+          .where(eq(profiles.id, targetProfileId))
+          .limit(1);
+        if (!target || target.id === profile.id) {
+          return apiJson({ error: "Kullanıcı engellenemedi." }, { status: 400 });
+        }
+        await db.insert(friendships).values({
+          id,
+          requesterProfileId: profile.id,
+          addresseeProfileId: targetProfileId,
+          status: "blocked",
+          createdAt: now,
+          updatedAt: now,
+        });
+        return apiJson({ ok: true });
+      }
+      return apiJson({ error: "Arkadaşlık kaydı bulunamadı." }, { status: 404 });
+    }
 
     if (payload.action === "accept") {
       if (
@@ -140,6 +161,24 @@ export async function POST(request: Request) {
         .update(friendships)
         .set({ status: "accepted", updatedAt: now })
         .where(eq(friendships.id, id));
+      await db
+        .update(directMessageRequests)
+        .set({ status: "accepted", updatedAt: now })
+        .where(
+          and(
+            eq(directMessageRequests.status, "pending"),
+            or(
+              and(
+                eq(directMessageRequests.requesterProfileId, existing.requesterProfileId),
+                eq(directMessageRequests.recipientProfileId, existing.addresseeProfileId),
+              ),
+              and(
+                eq(directMessageRequests.requesterProfileId, existing.addresseeProfileId),
+                eq(directMessageRequests.recipientProfileId, existing.requesterProfileId),
+              ),
+            ),
+          ),
+        );
       return apiJson({ ok: true });
     }
 

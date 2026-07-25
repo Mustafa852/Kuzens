@@ -57,6 +57,69 @@
       "when": 1784950742833,
       "tag": "0007_harsh_skin",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1784952091969,
+      "tag": "0008_wonderful_chameleon",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1784952512855,
+      "tag": "0009_spooky_wallflower",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1784953123144,
+      "tag": "0010_quiet_wraith",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1784953441420,
+      "tag": "0011_yellow_madame_web",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1784953998834,
+      "tag": "0012_tranquil_angel",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "6",
+      "when": 1784954316837,
+      "tag": "0013_motionless_chronomancer",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "6",
+      "when": 1784954599440,
+      "tag": "0014_curly_blockbuster",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "6",
+      "when": 1784954860525,
+      "tag": "0015_early_champions",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "6",
+      "when": 1784955254441,
+      "tag": "0016_perfect_slyde",
+      "breakpoints": true
     }
   ]
 }

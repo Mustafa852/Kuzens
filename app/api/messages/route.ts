@@ -1,9 +1,16 @@
-import { and, asc, desc, eq, gt, inArray, lte } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, lte, or } from "drizzle-orm";
 import {
+  channelNotificationSettings,
   channels,
+  friendships,
   messageMentions,
   messageReactions,
   messages,
+  messageThreads,
+  pollOptions,
+  polls,
+  pollVotes,
+  threadMessages,
   profiles,
   serverMembers,
 } from "@/db/schema";
@@ -23,6 +30,7 @@ import {
   readJson,
   requireIdentity,
 } from "@/lib/security";
+import { autoModError, checkAutoModeration } from "@/lib/automod";
 
 type MessagePayload = {
   id?: string;
@@ -41,7 +49,7 @@ async function decorateMessages(
 ) {
   if (!rows.length) return [];
   const ids = rows.map((message) => message.id);
-  const [reactionRows, mentionRows] = await Promise.all([
+  const [reactionRows, mentionRows, blockedRows] = await Promise.all([
     db.select().from(messageReactions).where(inArray(messageReactions.messageId, ids)),
     db
       .select({ messageId: messageMentions.messageId })
@@ -52,8 +60,56 @@ async function decorateMessages(
           eq(messageMentions.profileId, profileId),
         ),
       ),
+    db
+      .select({
+        requesterProfileId: friendships.requesterProfileId,
+        addresseeProfileId: friendships.addresseeProfileId,
+      })
+      .from(friendships)
+      .where(
+        and(
+          eq(friendships.status, "blocked"),
+          or(
+            eq(friendships.requesterProfileId, profileId),
+            eq(friendships.addresseeProfileId, profileId),
+          ),
+        ),
+      ),
   ]);
   const mentioned = new Set(mentionRows.map((item) => item.messageId));
+  const blockedProfileIds = new Set(
+    blockedRows.map((item) =>
+      item.requesterProfileId === profileId
+        ? item.addresseeProfileId
+        : item.requesterProfileId,
+    ),
+  );
+  const pollRows = await db
+    .select()
+    .from(polls)
+    .where(inArray(polls.messageId, ids));
+  const pollIds = pollRows.map((poll) => poll.id);
+  const [optionRows, voteRows] = pollIds.length
+    ? await Promise.all([
+        db.select().from(pollOptions).where(inArray(pollOptions.pollId, pollIds)),
+        db.select().from(pollVotes).where(inArray(pollVotes.pollId, pollIds)),
+      ])
+    : [[], []];
+  const threadRows = await db
+    .select()
+    .from(messageThreads)
+    .where(inArray(messageThreads.parentMessageId, ids));
+  const threadIds = threadRows.map((thread) => thread.id);
+  const threadReplyRows = threadIds.length
+    ? await db
+        .select({
+          threadId: threadMessages.threadId,
+          createdAt: threadMessages.createdAt,
+          deletedAt: threadMessages.deletedAt,
+        })
+        .from(threadMessages)
+        .where(inArray(threadMessages.threadId, threadIds))
+    : [];
   return rows.map((message) => {
     const grouped = new Map<string, { emoji: string; count: number; reactedByMe: boolean }>();
     for (const reaction of reactionRows) {
@@ -67,10 +123,61 @@ async function decorateMessages(
       if (reaction.profileId === profileId) current.reactedByMe = true;
       grouped.set(reaction.emoji, current);
     }
+    const poll = pollRows.find((item) => item.messageId === message.id);
+    const pollOptionRows = poll
+      ? optionRows
+          .filter((option) => option.pollId === poll.id)
+          .sort((a, b) => a.position - b.position)
+      : [];
+    const pollVoteRows = poll
+      ? voteRows.filter((vote) => vote.pollId === poll.id)
+      : [];
+    const thread = threadRows.find((item) => item.parentMessageId === message.id);
+    const replies = thread
+      ? threadReplyRows.filter(
+          (reply) => reply.threadId === thread.id && !reply.deletedAt,
+        )
+      : [];
     return {
       ...message,
       reactions: Array.from(grouped.values()),
       mentionedMe: mentioned.has(message.id),
+      blockedAuthor: Boolean(
+        message.authorProfileId && blockedProfileIds.has(message.authorProfileId),
+      ),
+      poll: poll
+        ? {
+            id: poll.id,
+            question: poll.question,
+            allowMultiple: poll.allowMultiple,
+            closesAt: poll.closesAt,
+            closedAt:
+              poll.closedAt ||
+              (poll.closesAt <= new Date().toISOString() ? poll.closesAt : null),
+            totalVotes: new Set(pollVoteRows.map((vote) => vote.profileId)).size,
+            options: pollOptionRows.map((option) => ({
+              id: option.id,
+              label: option.label,
+              count: pollVoteRows.filter((vote) => vote.optionId === option.id).length,
+              votedByMe: pollVoteRows.some(
+                (vote) =>
+                  vote.optionId === option.id && vote.profileId === profileId,
+              ),
+            })),
+          }
+        : null,
+      thread: thread
+        ? {
+            id: thread.id,
+            title: thread.title,
+            replyCount: replies.length,
+            locked: thread.locked,
+            archived: thread.archived,
+            updatedAt:
+              replies.sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0]
+                ?.createdAt || thread.updatedAt,
+          }
+        : null,
     };
   });
 }
@@ -93,6 +200,34 @@ async function requireTextChannel(
     .limit(1);
   if (!channel) return null;
   return channel;
+}
+
+async function blockedProfileIdsFor(
+  db: Awaited<ReturnType<typeof requireMember>>["db"],
+  profileId: string,
+) {
+  const rows = await db
+    .select({
+      requesterProfileId: friendships.requesterProfileId,
+      addresseeProfileId: friendships.addresseeProfileId,
+    })
+    .from(friendships)
+    .where(
+      and(
+        eq(friendships.status, "blocked"),
+        or(
+          eq(friendships.requesterProfileId, profileId),
+          eq(friendships.addresseeProfileId, profileId),
+        ),
+      ),
+    );
+  return new Set(
+    rows.map((item) =>
+      item.requesterProfileId === profileId
+        ? item.addresseeProfileId
+        : item.requesterProfileId,
+    ),
+  );
 }
 
 export async function GET(request: Request) {
@@ -167,6 +302,16 @@ export async function POST(request: Request) {
     ) {
       return apiJson({ error: "@everyone ve @here yalnızca yetkili roller tarafından kullanılabilir." }, { status: 403 });
     }
+    const autoModReason = await checkAutoModeration({
+      db,
+      profile,
+      serverId,
+      channelId,
+      content,
+    });
+    if (autoModReason) {
+      return apiJson({ error: autoModError(autoModReason) }, { status: 422 });
+    }
     if (channel.slowModeSeconds > 0 && (permissions & PERMISSIONS.manageMessages) === 0) {
       const [lastMessage] = await db
         .select({ createdAt: messages.createdAt })
@@ -222,8 +367,21 @@ export async function POST(request: Request) {
       .select({ profileId: serverMembers.profileId })
       .from(serverMembers)
       .where(eq(serverMembers.serverId, serverId));
+    const allNotificationRows = await db
+      .select({ profileId: channelNotificationSettings.profileId })
+      .from(channelNotificationSettings)
+      .where(
+        and(
+          eq(channelNotificationSettings.channelId, channelId),
+          eq(channelNotificationSettings.level, "all"),
+        ),
+      );
+    const allNotificationIds = new Set(
+      allNotificationRows.map((item) => item.profileId),
+    );
     const memberIds = new Set(membershipRows.map((item) => item.profileId));
     const profileRows = await db.select().from(profiles);
+    const blockedProfileIds = await blockedProfileIdsFor(db, profile.id);
     const mentionedUsernames = new Set(
       Array.from(content.matchAll(/@([a-z0-9_]{3,24})\b/gi)).map((match) =>
         match[1].toLocaleLowerCase("en-US"),
@@ -233,11 +391,13 @@ export async function POST(request: Request) {
     const targets = profileRows.filter(
       (item) =>
         item.id !== profile.id &&
+        !blockedProfileIds.has(item.id) &&
         (memberIds.has(item.id) || (serverId === DEFAULT_SERVER_ID && item.isOwner)) &&
         (
           massMention ||
           mentionedUsernames.has(item.username) ||
-          item.id === replyTargetProfileId
+          item.id === replyTargetProfileId ||
+          allNotificationIds.has(item.id)
         ),
     );
     if (targets.length) {
@@ -312,10 +472,21 @@ export async function PATCH(request: Request) {
     if (!ownsMessage && (permissions & PERMISSIONS.manageMessages) === 0) {
       return apiJson({ error: "Bu mesajı düzenleyemezsin." }, { status: 403 });
     }
+    const autoModReason = await checkAutoModeration({
+      db,
+      profile,
+      serverId,
+      channelId: message.channelId,
+      content,
+      editing: true,
+    });
+    if (autoModReason) {
+      return apiJson({ error: autoModError(autoModReason) }, { status: 422 });
+    }
     const editedAt = new Date().toISOString();
     await db.update(messages).set({ content, editedAt }).where(eq(messages.id, id));
     await db.delete(messageMentions).where(eq(messageMentions.messageId, id));
-    const [membershipRows, profileRows, replyRows] = await Promise.all([
+    const [membershipRows, profileRows, replyRows, blockedProfileIds] = await Promise.all([
       db
         .select({ profileId: serverMembers.profileId })
         .from(serverMembers)
@@ -328,6 +499,7 @@ export async function PATCH(request: Request) {
             .where(eq(messages.id, message.replyToId))
             .limit(1)
         : Promise.resolve([]),
+      blockedProfileIdsFor(db, profile.id),
     ]);
     const memberIds = new Set(membershipRows.map((item) => item.profileId));
     const usernames = new Set(
@@ -340,6 +512,7 @@ export async function PATCH(request: Request) {
     const targets = profileRows.filter(
       (item) =>
         item.id !== profile.id &&
+        !blockedProfileIds.has(item.id) &&
         (memberIds.has(item.id) || (serverId === DEFAULT_SERVER_ID && item.isOwner)) &&
         (massMention || usernames.has(item.username) || item.id === replyProfileId),
     );

@@ -1,10 +1,19 @@
 import { and, asc, eq, inArray } from "drizzle-orm";
 import {
   channels,
+  channelNotificationSettings,
+  channelReads,
+  communityEvents,
+  messageBookmarks,
   messageMentions,
   messageReactions,
+  messageThreads,
   messages,
+  pollOptions,
+  polls,
+  pollVotes,
   rtcSignals,
+  threadMessages,
 } from "@/db/schema";
 import {
   DEFAULT_SERVER_ID,
@@ -24,12 +33,14 @@ import {
 } from "@/lib/security";
 
 type ChannelPayload = {
+  action?: "reorder";
   id?: string;
   name?: string;
   kind?: "text" | "voice";
   serverId?: string;
   topic?: string;
   slowModeSeconds?: number;
+  orderedIds?: string[];
 };
 
 function channelName(value: unknown) {
@@ -104,6 +115,40 @@ export async function PATCH(request: Request) {
     const { db, profile } = await requireMember(identity, serverId);
     await requirePermission(profile, PERMISSIONS.manageChannels, serverId);
     await enforceRateLimit(request, "channel-update", identity.email, 20, 60 * 60_000);
+    if (payload.action === "reorder") {
+      if (
+        !Array.isArray(payload.orderedIds) ||
+        !payload.orderedIds.every((id) => typeof id === "string")
+      ) {
+        return apiJson({ error: "Oda sıralaması geçersiz." }, { status: 400 });
+      }
+      const existingChannels = await db
+        .select({ id: channels.id })
+        .from(channels)
+        .where(eq(channels.serverId, serverId));
+      const expected = new Set(existingChannels.map((channel) => channel.id));
+      const received = new Set(payload.orderedIds);
+      if (
+        received.size !== expected.size ||
+        payload.orderedIds.length !== expected.size ||
+        payload.orderedIds.some((id) => !expected.has(id))
+      ) {
+        return apiJson({ error: "Sıralama tüm odaları tam olarak içermeli." }, { status: 400 });
+      }
+      for (const [position, channelId] of payload.orderedIds.entries()) {
+        await db
+          .update(channels)
+          .set({ position })
+          .where(
+            and(
+              eq(channels.id, channelId),
+              eq(channels.serverId, serverId),
+            ),
+          );
+      }
+      await writeAudit(profile.id, "channel.reorder", serverId, `${received.size} oda`, serverId);
+      return apiJson({ ok: true });
+    }
     const id = cleanText(payload.id, { max: 80 });
     const name = channelName(payload.name);
     const topic =
@@ -166,10 +211,37 @@ export async function DELETE(request: Request) {
       .from(messages)
       .where(eq(messages.channelId, id));
     const messageIds = messageRows.map((message) => message.id);
+    const [pollRows, threadRows] = await Promise.all([
+      db.select({ id: polls.id }).from(polls).where(eq(polls.channelId, id)),
+      db
+        .select({ id: messageThreads.id })
+        .from(messageThreads)
+        .where(eq(messageThreads.channelId, id)),
+    ]);
+    const pollIds = pollRows.map((poll) => poll.id);
+    const threadIds = threadRows.map((thread) => thread.id);
+    if (pollIds.length) {
+      await db.delete(pollVotes).where(inArray(pollVotes.pollId, pollIds));
+      await db.delete(pollOptions).where(inArray(pollOptions.pollId, pollIds));
+      await db.delete(polls).where(inArray(polls.id, pollIds));
+    }
+    if (threadIds.length) {
+      await db.delete(threadMessages).where(inArray(threadMessages.threadId, threadIds));
+      await db.delete(messageThreads).where(inArray(messageThreads.id, threadIds));
+    }
     if (messageIds.length) {
       await db.delete(messageMentions).where(inArray(messageMentions.messageId, messageIds));
       await db.delete(messageReactions).where(inArray(messageReactions.messageId, messageIds));
+      await db.delete(messageBookmarks).where(inArray(messageBookmarks.messageId, messageIds));
     }
+    await db
+      .update(communityEvents)
+      .set({ channelId: null })
+      .where(eq(communityEvents.channelId, id));
+    await db
+      .delete(channelNotificationSettings)
+      .where(eq(channelNotificationSettings.channelId, id));
+    await db.delete(channelReads).where(eq(channelReads.channelId, id));
     await db.delete(messages).where(eq(messages.channelId, id));
     await db.delete(rtcSignals).where(eq(rtcSignals.channelId, id));
     await db.delete(channels).where(eq(channels.id, id));

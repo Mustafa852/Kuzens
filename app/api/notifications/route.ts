@@ -1,5 +1,12 @@
-import { and, desc, eq, inArray, isNull } from "drizzle-orm";
-import { channels, messageMentions, messages, servers } from "@/db/schema";
+import { and, desc, eq, inArray, isNull, or } from "drizzle-orm";
+import {
+  channelNotificationSettings,
+  channels,
+  friendships,
+  messageMentions,
+  messages,
+  servers,
+} from "@/db/schema";
 import { requireProfile } from "@/lib/community";
 import {
   apiError,
@@ -37,6 +44,44 @@ export async function GET(request: Request) {
     const channelRows = channelIds.length
       ? await db.select().from(channels).where(inArray(channels.id, channelIds))
       : [];
+    const notificationSettings = channelIds.length
+      ? await db
+          .select()
+          .from(channelNotificationSettings)
+          .where(
+            and(
+              eq(channelNotificationSettings.profileId, profile.id),
+              inArray(channelNotificationSettings.channelId, channelIds),
+            ),
+          )
+      : [];
+    const blockedRows = await db
+      .select({
+        requesterProfileId: friendships.requesterProfileId,
+        addresseeProfileId: friendships.addresseeProfileId,
+      })
+      .from(friendships)
+      .where(
+        and(
+          eq(friendships.status, "blocked"),
+          or(
+            eq(friendships.requesterProfileId, profile.id),
+            eq(friendships.addresseeProfileId, profile.id),
+          ),
+        ),
+      );
+    const blockedProfileIds = new Set(
+      blockedRows.map((item) =>
+        item.requesterProfileId === profile.id
+          ? item.addresseeProfileId
+          : item.requesterProfileId,
+      ),
+    );
+    const mutedChannelIds = new Set(
+      notificationSettings
+        .filter((setting) => setting.level === "none")
+        .map((setting) => setting.channelId),
+    );
     const serverIds = Array.from(new Set(channelRows.map((item) => item.serverId)));
     const serverRows = serverIds.length
       ? await db.select().from(servers).where(inArray(servers.id, serverIds))
@@ -49,7 +94,16 @@ export async function GET(request: Request) {
         const message = messageById.get(mention.messageId);
         const channel = message ? channelById.get(message.channelId) : undefined;
         const server = channel ? serverById.get(channel.serverId) : undefined;
-        if (!message || !channel || !server || message.deletedAt) return null;
+        if (
+          !message ||
+          !channel ||
+          !server ||
+          message.deletedAt ||
+          (message.authorProfileId && blockedProfileIds.has(message.authorProfileId)) ||
+          mutedChannelIds.has(channel.id)
+        ) {
+          return null;
+        }
         return {
           id: mention.id,
           messageId: message.id,
