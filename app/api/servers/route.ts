@@ -3,6 +3,7 @@ import {
   auraMemberships,
   auditLogs,
   channels,
+  channelPermissionOverwrites,
   channelNotificationSettings,
   channelReads,
   communityEvents,
@@ -24,13 +25,17 @@ import {
   serverGuideProgress,
   serverGuides,
   serverMembers,
+  serverAuraMemberships,
   servers,
   threadMessages,
 } from "@/db/schema";
 import {
   DEFAULT_SERVER_ID,
+  PERMISSIONS,
   defaultRoles,
   ensureMembership,
+  requireMember,
+  requirePermission,
   requireProfile,
   writeAudit,
 } from "@/lib/community";
@@ -45,7 +50,16 @@ import {
 } from "@/lib/security";
 import { getDb } from "@/db";
 
-type ServerPayload = { id?: string; name?: string; icon?: string };
+type ServerPayload = {
+  id?: string;
+  name?: string;
+  icon?: string;
+  description?: string;
+  defaultNotificationLevel?: "all" | "mentions";
+  explicitContentFilter?: boolean;
+  preferredLocale?: string;
+  systemChannelId?: string | null;
+};
 
 function serverSlug(name: string) {
   const base = name
@@ -125,6 +139,11 @@ export async function POST(request: Request) {
       name,
       icon: name.slice(0, 2).toLocaleUpperCase("tr-TR"),
       ownerProfileId: profile.id,
+      description: "",
+      defaultNotificationLevel: "mentions" as const,
+      explicitContentFilter: true,
+      preferredLocale: "tr",
+      systemChannelId: `${id}:genel`,
       createdAt: now,
     };
     await db.insert(servers).values(server);
@@ -166,23 +185,56 @@ export async function PATCH(request: Request) {
   try {
     assertTrustedMutation(request);
     const identity = requireIdentity(request);
-    const profile = await requireProfile(identity);
     await enforceRateLimit(request, "server-update", identity.email, 20, 60 * 60_000);
     const payload = await readJson<ServerPayload>(request, 4_096);
     const id = cleanText(payload.id, { max: 80 });
+    const { db, profile } = await requireMember(identity, id);
     const name = cleanText(payload.name, { min: 2, max: 40 });
     const icon = cleanText(payload.icon || name.slice(0, 2), { min: 1, max: 3 });
-    const db = getDb();
+    const description = cleanText(payload.description || "", { max: 240 });
+    const defaultNotificationLevel =
+      payload.defaultNotificationLevel === "all" ? "all" : "mentions";
+    const explicitContentFilter = payload.explicitContentFilter !== false;
+    const preferredLocale = ["tr", "en"].includes(payload.preferredLocale || "")
+      ? (payload.preferredLocale as string)
+      : "tr";
+    const systemChannelId = payload.systemChannelId
+      ? cleanText(payload.systemChannelId, { max: 100 })
+      : null;
     const [server] = await db.select().from(servers).where(eq(servers.id, id)).limit(1);
-    const ownsServer =
-      server?.ownerProfileId === profile.id ||
-      (id === DEFAULT_SERVER_ID && profile.isOwner);
-    if (!server || !ownsServer) {
-      return apiJson({ error: "Topluluk ayarlarını değiştirme yetkin yok." }, { status: 403 });
+    if (!server) return apiJson({ error: "Topluluk bulunamadı." }, { status: 404 });
+    await requirePermission(profile, PERMISSIONS.manageServer, id);
+    if (systemChannelId) {
+      const [systemChannel] = await db
+        .select({ id: channels.id })
+        .from(channels)
+        .where(
+          and(
+            eq(channels.id, systemChannelId),
+            eq(channels.serverId, id),
+            eq(channels.kind, "text"),
+          ),
+        )
+        .limit(1);
+      if (!systemChannel) {
+        return apiJson(
+          { error: "Sistem odası bu topluluğa ait bir metin odası olmalı." },
+          { status: 400 },
+        );
+      }
     }
-    await db.update(servers).set({ name, icon }).where(eq(servers.id, id));
+    const changes = {
+      name,
+      icon,
+      description,
+      defaultNotificationLevel,
+      explicitContentFilter,
+      preferredLocale,
+      systemChannelId,
+    };
+    await db.update(servers).set(changes).where(eq(servers.id, id));
     await writeAudit(profile.id, "server.update", id, `${name}|${icon}`, id);
-    return apiJson({ server: { ...server, name, icon } });
+    return apiJson({ server: { ...server, ...changes } });
   } catch (error) {
     return apiError(error);
   }
@@ -243,6 +295,9 @@ export async function DELETE(request: Request) {
       await db
         .delete(channelNotificationSettings)
         .where(inArray(channelNotificationSettings.channelId, channelIds));
+      await db
+        .delete(channelPermissionOverwrites)
+        .where(inArray(channelPermissionOverwrites.channelId, channelIds));
       await db.delete(channelReads).where(inArray(channelReads.channelId, channelIds));
       await db.delete(messages).where(inArray(messages.channelId, channelIds));
     }
@@ -265,6 +320,7 @@ export async function DELETE(request: Request) {
     await db.delete(invites).where(eq(invites.serverId, id));
     await db.delete(memberRoles).where(eq(memberRoles.serverId, id));
     await db.delete(serverMembers).where(eq(serverMembers.serverId, id));
+    await db.delete(serverAuraMemberships).where(eq(serverAuraMemberships.serverId, id));
     await db.delete(roles).where(eq(roles.serverId, id));
     await db.delete(channels).where(eq(channels.serverId, id));
     await db.delete(auditLogs).where(eq(auditLogs.serverId, id));

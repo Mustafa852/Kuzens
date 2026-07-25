@@ -4,8 +4,8 @@ import {
   DEFAULT_SERVER_ID,
   PERMISSIONS,
   ensureMembership,
+  requireChannelPermission,
   requireMember,
-  requirePermission,
 } from "@/lib/community";
 import {
   apiError,
@@ -30,7 +30,6 @@ export async function POST(request: Request) {
     await enforceRateLimit(request, "presence", identity.email, 40, 60_000);
     let voiceChannelId: string | null = null;
     if (payload.voiceChannelId) {
-      await requirePermission(profile, PERMISSIONS.joinVoice, serverId);
       const [voiceChannel] = await db
         .select()
         .from(channels)
@@ -45,13 +44,41 @@ export async function POST(request: Request) {
       if (!voiceChannel) {
         return apiJson({ error: "Ses odası bulunamadı." }, { status: 404 });
       }
+      await requireChannelPermission(
+        profile,
+        PERMISSIONS.joinVoice,
+        serverId,
+        voiceChannel.id,
+      );
+      if (voiceChannel.userLimit > 0) {
+        const participants = await db
+          .select({ profileId: serverMembers.profileId })
+          .from(serverMembers)
+          .where(
+            and(
+              eq(serverMembers.serverId, serverId),
+              eq(serverMembers.voiceChannelId, voiceChannel.id),
+            ),
+          );
+        if (
+          participants.length >= voiceChannel.userLimit &&
+          !participants.some((item) => item.profileId === profile.id)
+        ) {
+          return apiJson({ error: "Ses odası kullanıcı sınırına ulaştı." }, { status: 409 });
+        }
+      }
       voiceChannelId = voiceChannel.id;
     }
     if (payload.sharing) {
-      await requirePermission(profile, PERMISSIONS.shareScreen, serverId);
       if (!voiceChannelId) {
         return apiJson({ error: "Ekran paylaşımı için bir ses odasında olmalısın." }, { status: 400 });
       }
+      await requireChannelPermission(
+        profile,
+        PERMISSIONS.shareScreen,
+        serverId,
+        voiceChannelId,
+      );
     }
 
     await ensureMembership(profile.id, serverId);

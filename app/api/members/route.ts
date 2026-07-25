@@ -41,9 +41,12 @@ export async function GET(request: Request) {
     ]);
     const membershipByProfile = new Map(membershipRows.map((item) => [item.profileId, item]));
     const roleById = new Map(roleRows.map((role) => [role.id, role]));
-    const assignmentByTag = new Map(
-      assignmentRows.map((assignment) => [assignment.memberTag, assignment]),
-    );
+    const assignmentsByTag = new Map<string, typeof assignmentRows>();
+    for (const assignment of assignmentRows) {
+      const grouped = assignmentsByTag.get(assignment.memberTag) || [];
+      grouped.push(assignment);
+      assignmentsByTag.set(assignment.memberTag, grouped);
+    }
     const now = Date.now();
     const members = profileRows
       .filter(
@@ -58,9 +61,21 @@ export async function GET(request: Request) {
           : 0;
         const online =
           profile.presenceStatus !== "invisible" && now - lastSeen < 90_000;
-        const role =
-          roleById.get(assignmentByTag.get(`@${profile.username}`)?.roleId || "") ||
-          roleById.get(`${serverId}:member`);
+        const memberRoleRows = [
+          roleById.get(`${serverId}:member`),
+          ...(assignmentsByTag.get(`@${profile.username}`) || []).map(
+            (assignment) => roleById.get(assignment.roleId),
+          ),
+        ]
+          .filter(
+            (role): role is (typeof roleRows)[number] => Boolean(role),
+          )
+          .filter(
+            (role, index, all) =>
+              all.findIndex((candidate) => candidate.id === role.id) === index,
+          )
+          .sort((a, b) => a.position - b.position);
+        const role = memberRoleRows[0];
         return {
           id: profile.id,
           name: profile.displayName,
@@ -73,6 +88,11 @@ export async function GET(request: Request) {
           presenceStatus: online ? profile.presenceStatus : "offline",
           bio: profile.bio,
           role: role ? { id: role.id, name: role.name, color: role.color } : null,
+          roles: memberRoleRows.map((item) => ({
+            id: item.id,
+            name: item.name,
+            color: item.color,
+          })),
         };
       })
       .sort((a, b) => Number(b.online) - Number(a.online) || a.name.localeCompare(b.name, "tr"));
@@ -146,17 +166,24 @@ export async function POST(request: Request) {
     }
     const membershipIds = new Set(membershipRows.map((item) => item.profileId));
     const roleById = new Map(roleRows.map((role) => [role.id, role]));
-    const assignmentByTag = new Map(
-      assignmentRows.map((assignment) => [assignment.memberTag, assignment]),
-    );
+    const assignmentsByTag = new Map<string, typeof assignmentRows>();
+    for (const assignment of assignmentRows) {
+      const grouped = assignmentsByTag.get(assignment.memberTag) || [];
+      grouped.push(assignment);
+      assignmentsByTag.set(assignment.memberTag, grouped);
+    }
     const rolePosition = (member: typeof profiles.$inferSelect) => {
       const memberIsOwner =
         server?.ownerProfileId === member.id ||
         (serverId === DEFAULT_SERVER_ID && member.isOwner);
       if (memberIsOwner) return -1;
-      const roleId =
-        assignmentByTag.get(`@${member.username}`)?.roleId || `${serverId}:member`;
-      return roleById.get(roleId)?.position ?? Number.MAX_SAFE_INTEGER;
+      const positions = [
+        roleById.get(`${serverId}:member`)?.position,
+        ...(assignmentsByTag.get(`@${member.username}`) || []).map(
+          (assignment) => roleById.get(assignment.roleId)?.position,
+        ),
+      ].filter((position): position is number => typeof position === "number");
+      return positions.length ? Math.min(...positions) : Number.MAX_SAFE_INTEGER;
     };
     if (!actorIsOwner && rolePosition(target) <= rolePosition(profile)) {
       return apiJson({ error: "Eşit veya üst roldeki bir üyeye işlem uygulayamazsın." }, { status: 403 });

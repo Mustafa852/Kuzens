@@ -7,8 +7,8 @@ export default function manifest(): MetadataRoute.Manifest {
     description: "Arkadaşlarınla konuş, paylaş ve birlikte kal.",
     start_url: "/",
     display: "standalone",
-    background_color: "#0d0b12",
-    theme_color: "#15121b",
+    background_color: "#090a0f",
+    theme_color: "#8b73ff",
     orientation: "any",
     icons: [
       {

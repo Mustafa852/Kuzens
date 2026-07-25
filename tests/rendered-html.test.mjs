@@ -80,6 +80,10 @@ const mutationRouteSources = await Promise.all(
       source: await readFile(new URL(entry.replaceAll("\\", "/"), apiRoot), "utf8"),
     })),
 );
+const [accountRoute, channelPermissionsRoute] = await Promise.all([
+  readFile(new URL("../app/api/account/route.ts", import.meta.url), "utf8"),
+  readFile(new URL("../app/api/channel-permissions/route.ts", import.meta.url), "utf8"),
+]);
 
 test("keeps the application fixed to the viewport", () => {
   assert.match(
@@ -221,6 +225,43 @@ test("ships owner-managed Kuzens Aura codes without storing plaintext codes", ()
   assert.match(auraRoute, /action === "create-code"/);
   assert.match(auraRoute, /action === "grant"/);
   assert.doesNotMatch(schemaSource, /plainCode|plain_code/);
+});
+
+test("supports multi-role members and role-scoped channel access", () => {
+  assert.match(schemaSource, /member_roles_server_member_role_idx/);
+  assert.match(schemaSource, /channelPermissionOverwrites/);
+  assert.match(communitySource, /permissions \| role\.permissions/);
+  assert.match(communitySource, /basePermissions & ~denied/);
+  assert.match(channelPermissionsRoute, /allowPermissions/);
+  assert.match(channelPermissionsRoute, /denyPermissions/);
+  assert.match(appSource, /Bir üyeye birden fazla rol verebilirsin/);
+  assert.match(appSource, /Rol bazlı oda izinleri/);
+});
+
+test("provides protected account deletion and the requested owner identity", () => {
+  assert.match(communitySource, /ibrahimilhan159@gmail\.com/);
+  assert.match(profileRoute, /isPrimaryOwnerEmail\(identity\.email\)/);
+  assert.match(accountRoute, /confirmation !== "HESABIMI SİL"/);
+  assert.match(accountRoute, /Önce sahibi olduğun toplulukları silmelisin/);
+  assert.match(accountRoute, /assertTrustedMutation\(request\)/);
+  assert.match(accountRoute, /enforceRateLimit/);
+  assert.match(appSource, /Hesabı kalıcı olarak sil/);
+});
+
+test("separates personal Aura from Aura community upgrades", () => {
+  assert.match(schemaSource, /serverAuraMemberships/);
+  assert.match(auraRoute, /action === "grant-server"/);
+  assert.match(auraRoute, /action === "revoke-server"/);
+  assert.match(appSource, /AURA TOPLULUK/);
+  assert.match(appSource, /Aura Topluluk \$\{serverAuraMembership\.tier\}/);
+});
+
+test("uses the readable Kuzens V2 visual system", () => {
+  assert.match(appStyles, /Kuzens V2/);
+  assert.match(appStyles, /--kz-violet/);
+  assert.match(appStyles, /\.message p\s*\{[\s\S]*?font-size:\s*15px/);
+  assert.match(appStyles, /\.account-modal\s*\{[\s\S]*?grid-template-columns/);
+  assert.match(appSource, /Doğrulanmış kimlik oturumu/);
 });
 
 test("adds private direct messages with server-side privacy and ownership checks", () => {

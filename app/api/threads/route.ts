@@ -10,6 +10,7 @@ import {
 import {
   PERMISSIONS,
   permissionsFor,
+  requireChannelPermission,
   requireMember,
 } from "@/lib/community";
 import {
@@ -62,6 +63,12 @@ export async function GET(request: Request) {
     const row = await threadWithServer(threadId);
     if (!row) throw new ApiError(404, "Konu başlığı bulunamadı.");
     const { db, profile } = await requireMember(identity, row.thread.serverId);
+    await requireChannelPermission(
+      profile,
+      PERMISSIONS.viewChannels,
+      row.thread.serverId,
+      row.thread.channelId,
+    );
     const [parent] = await db
       .select()
       .from(messages)
@@ -153,6 +160,12 @@ export async function POST(request: Request) {
       const parentMessageId = cleanText(payload.parentMessageId, { max: 80 });
       const title = cleanText(payload.title, { min: 2, max: 80 });
       const { db, profile } = await requireMember(identity, serverId);
+      await requireChannelPermission(
+        profile,
+        PERMISSIONS.sendMessages,
+        serverId,
+        channelId,
+      );
       const [parent] = await db
         .select({ id: messages.id })
         .from(messages)
@@ -202,6 +215,12 @@ export async function POST(request: Request) {
       const row = await threadWithServer(threadId);
       if (!row) throw new ApiError(404, "Konu başlığı bulunamadı.");
       const { db, profile } = await requireMember(identity, row.thread.serverId);
+      await requireChannelPermission(
+        profile,
+        PERMISSIONS.sendMessages,
+        row.thread.serverId,
+        row.thread.channelId,
+      );
       if (row.thread.locked || row.thread.archived) {
         throw new ApiError(409, "Bu konu başlığı yeni yanıtlara kapalı.");
       }

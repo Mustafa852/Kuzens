@@ -1,7 +1,15 @@
-import { asc, eq } from "drizzle-orm";
-import { memberRoles, profiles, roles, serverMembers, servers } from "@/db/schema";
+import { and, asc, eq, inArray } from "drizzle-orm";
+import {
+  channelPermissionOverwrites,
+  memberRoles,
+  profiles,
+  roles,
+  serverMembers,
+  servers,
+} from "@/db/schema";
 import {
   DEFAULT_SERVER_ID,
+  ALL_PERMISSIONS,
   PERMISSIONS,
   defaultRoles,
   permissionsFor,
@@ -54,10 +62,8 @@ export async function GET(request: Request) {
       .select()
       .from(memberRoles)
       .where(eq(memberRoles.serverId, serverId));
-    const [server] = await db.select().from(servers).where(eq(servers.id, serverId)).limit(1);
     const canManage =
-      server?.ownerProfileId === profile.id ||
-      (serverId === DEFAULT_SERVER_ID && profile.isOwner);
+      ((await permissionsFor(profile, serverId)) & PERMISSIONS.manageRoles) !== 0;
     return apiJson({
       roles: roleRows,
       assignments: assignmentRows,
@@ -81,18 +87,34 @@ export async function POST(request: Request) {
     const isServerOwner =
       server?.ownerProfileId === profile.id ||
       (serverId === DEFAULT_SERVER_ID && profile.isOwner);
-    if (!isServerOwner) {
-      return apiJson(
-        { error: "Rol hiyerarşisini yalnızca doğrulanmış Kurucu hesabı değiştirebilir." },
-        { status: 403 },
-      );
-    }
+    const actorPermissions = await permissionsFor(profile, serverId);
     await enforceRateLimit(request, "roles-update", identity.email, 20, 60 * 60_000);
     const action = payload.action || "save";
     const validRoles = await db
       .select()
       .from(roles)
       .where(eq(roles.serverId, serverId));
+    const actorTag = `@${profile.username}`;
+    const currentAssignments = await db
+      .select()
+      .from(memberRoles)
+      .where(eq(memberRoles.serverId, serverId));
+    const memberRole = validRoles.find((role) => role.id.endsWith(":member"));
+    const actorRoleIds = new Set(
+      currentAssignments
+        .filter((assignment) => assignment.memberTag === actorTag)
+        .map((assignment) => assignment.roleId),
+    );
+    const actorHighestPosition = isServerOwner
+      ? -1
+      : Math.min(
+          memberRole?.position ?? Number.MAX_SAFE_INTEGER,
+          ...validRoles
+            .filter((role) => actorRoleIds.has(role.id))
+            .map((role) => role.position),
+        );
+    const canManageRole = (role: (typeof validRoles)[number]) =>
+      isServerOwner || role.position > actorHighestPosition;
 
     if (action === "create") {
       if (validRoles.length >= 20) {
@@ -100,14 +122,21 @@ export async function POST(request: Request) {
       }
       const name = cleanText(payload.name, { min: 1, max: 32 });
       const now = new Date().toISOString();
+      const requestedPermissions = Number.isInteger(payload.permissions)
+        ? Math.max(0, Math.min(ALL_PERMISSIONS, Number(payload.permissions)))
+        : PERMISSIONS.viewChannels | PERMISSIONS.sendMessages;
+      if (!isServerOwner && (requestedPermissions & ~actorPermissions) !== 0) {
+        return apiJson(
+          { error: "Sahip olmadığın bir yetkiyi yeni role veremezsin." },
+          { status: 403 },
+        );
+      }
       const role = {
         id: `${serverId}:custom:${crypto.randomUUID().slice(0, 10)}`,
         serverId,
         name,
         color: roleColor(payload.color),
-        permissions: Number.isInteger(payload.permissions)
-          ? Math.max(0, Math.min(255, Number(payload.permissions)))
-          : 192,
+        permissions: requestedPermissions,
         position: Math.max(...validRoles.map((item) => item.position), 0) + 1,
         createdAt: now,
       };
@@ -122,10 +151,13 @@ export async function POST(request: Request) {
       if (!role || !role.id.includes(":custom:")) {
         return apiJson({ error: "Yalnızca özel roller silinebilir." }, { status: 400 });
       }
+      if (!canManageRole(role)) {
+        return apiJson({ error: "Bu rol hiyerarşide senin rolüne eşit veya daha yüksek." }, { status: 403 });
+      }
+      await db.delete(memberRoles).where(eq(memberRoles.roleId, role.id));
       await db
-        .update(memberRoles)
-        .set({ roleId: `${serverId}:member` })
-        .where(eq(memberRoles.roleId, role.id));
+        .delete(channelPermissionOverwrites)
+        .where(eq(channelPermissionOverwrites.roleId, role.id));
       await db.delete(roles).where(eq(roles.id, role.id));
       await writeAudit(profile.id, "roles.delete", role.id, role.name, serverId);
       return apiJson({ ok: true });
@@ -135,17 +167,27 @@ export async function POST(request: Request) {
       !roleId.startsWith(`${serverId}:`) ||
       !Number.isInteger(payload.permissions) ||
       payload.permissions! < 0 ||
-      payload.permissions! > 255
+      payload.permissions! > ALL_PERMISSIONS
     ) {
       return apiJson({ error: "Geçersiz rol veya yetki değeri." }, { status: 400 });
     }
-    if (roleId.endsWith(":owner") && payload.permissions !== 255) {
+    if (roleId.endsWith(":owner") && payload.permissions !== ALL_PERMISSIONS) {
       return apiJson({ error: "Kurucu rolünün tüm yetkileri açık kalmalı." }, { status: 400 });
     }
 
     const validRoleIds = new Set(validRoles.map((role) => role.id));
     if (!validRoleIds.has(roleId)) {
       return apiJson({ error: "Rol bulunamadı." }, { status: 404 });
+    }
+    const currentRole = validRoles.find((role) => role.id === roleId)!;
+    if (!canManageRole(currentRole)) {
+      return apiJson({ error: "Bu rol hiyerarşide senin rolüne eşit veya daha yüksek." }, { status: 403 });
+    }
+    if (!isServerOwner && (payload.permissions! & ~actorPermissions) !== 0) {
+      return apiJson(
+        { error: "Sahip olmadığın bir yetkiyi role veremezsin." },
+        { status: 403 },
+      );
     }
 
     const membershipRows = await db
@@ -160,7 +202,8 @@ export async function POST(request: Request) {
         .filter((item) => allowedProfileIds.has(item.id))
         .map((item) => `@${item.username}`),
     );
-    const ownerTag = `@${profile.username}`;
+    const ownerProfile = profileRows.find((item) => item.id === server?.ownerProfileId);
+    const ownerTag = ownerProfile ? `@${ownerProfile.username}` : "";
     const ownerRoleId = `${serverId}:owner`;
     const validatedAssignments: Array<{ memberTag: string; roleId: string }> = [];
 
@@ -187,7 +230,6 @@ export async function POST(request: Request) {
       validatedAssignments.push({ memberTag, roleId: assignedRoleId });
     }
 
-    const currentRole = validRoles.find((role) => role.id === roleId)!;
     const name =
       roleId.endsWith(":owner")
         ? currentRole.name
@@ -199,20 +241,52 @@ export async function POST(request: Request) {
       .update(roles)
       .set({ name, color, permissions: payload.permissions! })
       .where(eq(roles.id, roleId));
-    for (const assignment of validatedAssignments) {
+    if (!roleId.endsWith(":member") && !roleId.endsWith(":owner")) {
+      const highestPositionFor = (memberTag: string) =>
+        Math.min(
+          memberRole?.position ?? Number.MAX_SAFE_INTEGER,
+          ...currentAssignments
+            .filter((assignment) => assignment.memberTag === memberTag)
+            .map((assignment) => {
+              const role = validRoles.find((item) => item.id === assignment.roleId);
+              return role?.position ?? Number.MAX_SAFE_INTEGER;
+            }),
+        );
+      const manageableTags = Array.from(allowedTags).filter(
+        (memberTag) =>
+          isServerOwner ||
+          (memberTag !== ownerTag && highestPositionFor(memberTag) > actorHighestPosition),
+      );
       await db
-        .insert(memberRoles)
-        .values({
-          id: `${serverId}:${assignment.memberTag}`,
-          serverId,
-          memberTag: assignment.memberTag,
-          roleId: assignment.roleId,
-          createdAt: new Date().toISOString(),
-        })
-        .onConflictDoUpdate({
-          target: [memberRoles.serverId, memberRoles.memberTag],
-          set: { roleId: assignment.roleId },
-        });
+        .delete(memberRoles)
+        .where(
+          and(
+            eq(memberRoles.serverId, serverId),
+            eq(memberRoles.roleId, roleId),
+            manageableTags.length
+              ? inArray(memberRoles.memberTag, manageableTags)
+              : eq(memberRoles.memberTag, "__none__"),
+          ),
+        );
+      const selectedAssignments = validatedAssignments.filter(
+        (assignment) =>
+          assignment.roleId === roleId &&
+          manageableTags.includes(assignment.memberTag),
+      );
+      if (selectedAssignments.length) {
+        await db
+          .insert(memberRoles)
+          .values(
+            selectedAssignments.map((assignment) => ({
+              id: `${serverId}:${assignment.memberTag}:${roleId}`,
+              serverId,
+              memberTag: assignment.memberTag,
+              roleId,
+              createdAt: new Date().toISOString(),
+            })),
+          )
+          .onConflictDoNothing();
+      }
     }
     await writeAudit(profile.id, "roles.update", roleId, String(payload.permissions), serverId);
     return apiJson({ ok: true });

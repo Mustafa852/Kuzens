@@ -1,6 +1,7 @@
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull, or } from "drizzle-orm";
 import {
   channels,
+  channelPermissionOverwrites,
   channelNotificationSettings,
   channelReads,
   communityEvents,
@@ -13,11 +14,13 @@ import {
   polls,
   pollVotes,
   rtcSignals,
+  serverAuraMemberships,
   threadMessages,
 } from "@/db/schema";
 import {
   DEFAULT_SERVER_ID,
   PERMISSIONS,
+  channelPermissionsFor,
   requireMember,
   requirePermission,
   writeAudit,
@@ -40,6 +43,9 @@ type ChannelPayload = {
   serverId?: string;
   topic?: string;
   slowModeSeconds?: number;
+  bitrate?: number;
+  userLimit?: number;
+  region?: string;
   orderedIds?: string[];
 };
 
@@ -50,6 +56,28 @@ function channelName(value: unknown) {
     .replace(/[^a-z0-9ğüşöçı_-]/g, "");
 }
 
+async function maxVoiceBitrate(
+  db: ReturnType<typeof import("@/db").getDb>,
+  serverId: string,
+  isPlatformOwner: boolean,
+) {
+  if (isPlatformOwner) return 384_000;
+  const [membership] = await db
+    .select({ tier: serverAuraMemberships.tier })
+    .from(serverAuraMemberships)
+    .where(
+      and(
+        eq(serverAuraMemberships.serverId, serverId),
+        or(
+          isNull(serverAuraMemberships.expiresAt),
+          gt(serverAuraMemberships.expiresAt, new Date().toISOString()),
+        ),
+      ),
+    )
+    .limit(1);
+  return membership ? [64_000, 128_000, 192_000, 256_000][membership.tier] || 128_000 : 64_000;
+}
+
 export async function GET(request: Request) {
   try {
     const identity = requireIdentity(request);
@@ -57,13 +85,33 @@ export async function GET(request: Request) {
       new URL(request.url).searchParams.get("server") || DEFAULT_SERVER_ID,
       { max: 80 },
     );
-    const { db } = await requireMember(identity, serverId);
+    const { db, profile } = await requireMember(identity, serverId);
     const rows = await db
       .select()
       .from(channels)
       .where(eq(channels.serverId, serverId))
       .orderBy(asc(channels.position));
-    return apiJson({ channels: rows });
+    const visibleRows = (
+      await Promise.all(
+        rows.map(async (channel) => ({
+          channel,
+          permissions: await channelPermissionsFor(
+            profile,
+            serverId,
+            channel.id,
+          ),
+        })),
+      )
+    )
+      .filter(
+        ({ permissions }) =>
+          (permissions & PERMISSIONS.viewChannels) !== 0,
+      )
+      .map(({ channel, permissions }) => ({
+        ...channel,
+        permissions,
+      }));
+    return apiJson({ channels: visibleRows });
   } catch (error) {
     return apiError(error);
   }
@@ -80,6 +128,15 @@ export async function POST(request: Request) {
     await enforceRateLimit(request, "channel-create", identity.email, 10, 60 * 60_000);
     const name = channelName(payload.name);
     const kind: "text" | "voice" = payload.kind === "voice" ? "voice" : "text";
+    const bitrateLimit = await maxVoiceBitrate(db, serverId, profile.isOwner);
+    const bitrate =
+      kind === "voice" && Number.isInteger(payload.bitrate)
+        ? Math.max(16_000, Math.min(bitrateLimit, Number(payload.bitrate)))
+        : 64_000;
+    const userLimit =
+      kind === "voice" && Number.isInteger(payload.userLimit)
+        ? Math.max(0, Math.min(99, Number(payload.userLimit)))
+        : 0;
 
     if (!name) return apiJson({ error: "Geçerli bir oda adı gir." }, { status: 400 });
     const existing = await db
@@ -95,6 +152,9 @@ export async function POST(request: Request) {
       serverId,
       name,
       kind,
+      bitrate,
+      userLimit,
+      region: kind === "voice" ? cleanText(payload.region || "auto", { max: 24 }) : "auto",
       position: existing.length,
       createdAt: new Date().toISOString(),
     };
@@ -169,10 +229,26 @@ export async function PATCH(request: Request) {
       .where(and(eq(channels.id, id), eq(channels.serverId, serverId)))
       .limit(1);
     if (!existing) return apiJson({ error: "Oda bulunamadı." }, { status: 404 });
+    const bitrateLimit = await maxVoiceBitrate(db, serverId, profile.isOwner);
+    const bitrate = Number(payload.bitrate ?? existing.bitrate ?? 64_000);
+    const userLimit = Number(payload.userLimit ?? existing.userLimit ?? 0);
+    if (
+      !Number.isInteger(bitrate) ||
+      bitrate < 16_000 ||
+      bitrate > bitrateLimit ||
+      !Number.isInteger(userLimit) ||
+      userLimit < 0 ||
+      userLimit > 99
+    ) {
+      return apiJson({ error: "Ses odası kapasitesi veya bit hızı geçersiz." }, { status: 400 });
+    }
+    const region = cleanText(payload.region || existing.region || "auto", {
+      max: 24,
+    });
 
     await db
       .update(channels)
-      .set({ name, topic, slowModeSeconds })
+      .set({ name, topic, slowModeSeconds, bitrate, userLimit, region })
       .where(eq(channels.id, id));
     await writeAudit(
       profile.id,
@@ -181,7 +257,17 @@ export async function PATCH(request: Request) {
       `${name}:${slowModeSeconds}`,
       serverId,
     );
-    return apiJson({ channel: { ...existing, name, topic, slowModeSeconds } });
+    return apiJson({
+      channel: {
+        ...existing,
+        name,
+        topic,
+        slowModeSeconds,
+        bitrate,
+        userLimit,
+        region,
+      },
+    });
   } catch (error) {
     return apiError(error);
   }
@@ -242,6 +328,9 @@ export async function DELETE(request: Request) {
       .delete(channelNotificationSettings)
       .where(eq(channelNotificationSettings.channelId, id));
     await db.delete(channelReads).where(eq(channelReads.channelId, id));
+    await db
+      .delete(channelPermissionOverwrites)
+      .where(eq(channelPermissionOverwrites.channelId, id));
     await db.delete(messages).where(eq(messages.channelId, id));
     await db.delete(rtcSignals).where(eq(rtcSignals.channelId, id));
     await db.delete(channels).where(eq(channels.id, id));

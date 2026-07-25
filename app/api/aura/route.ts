@@ -4,8 +4,10 @@ import {
   auraMemberships,
   auraRedemptions,
   profiles,
+  serverAuraMemberships,
+  servers,
 } from "@/db/schema";
-import { requireProfile } from "@/lib/community";
+import { requireMember, requireProfile } from "@/lib/community";
 import {
   ApiError,
   apiError,
@@ -19,10 +21,19 @@ import {
 import { getDb } from "@/db";
 
 type AuraPayload = {
-  action?: "redeem" | "create-code" | "grant" | "revoke" | "disable-code";
+  action?:
+    | "redeem"
+    | "create-code"
+    | "grant"
+    | "revoke"
+    | "disable-code"
+    | "grant-server"
+    | "revoke-server";
   code?: string;
   codeId?: string;
   username?: string;
+  serverId?: string;
+  tier?: number;
   durationDays?: number | null;
   maxUses?: number;
 };
@@ -84,11 +95,20 @@ export async function GET(request: Request) {
     const identity = requireIdentity(request);
     const profile = await requireProfile(identity);
     const db = getDb();
+    const serverId = new URL(request.url).searchParams.get("serverId");
+    if (serverId) await requireMember(profile.id, serverId);
     const [membership] = await db
       .select()
       .from(auraMemberships)
       .where(eq(auraMemberships.profileId, profile.id))
       .limit(1);
+    const [serverMembership] = serverId
+      ? await db
+          .select()
+          .from(serverAuraMemberships)
+          .where(eq(serverAuraMemberships.serverId, serverId))
+          .limit(1)
+      : [];
 
     let owner:
       | {
@@ -101,11 +121,19 @@ export async function GET(request: Request) {
             source: string;
             expiresAt: string | null;
           }>;
+          servers: Array<{
+            id: string;
+            serverId: string;
+            serverName: string;
+            tier: number;
+            source: string;
+            expiresAt: string | null;
+          }>;
         }
       | undefined;
 
     if (profile.isOwner) {
-      const [codes, memberships] = await Promise.all([
+      const [codes, memberships, auraServers] = await Promise.all([
         db
           .select()
           .from(auraCodes)
@@ -131,13 +159,35 @@ export async function GET(request: Request) {
           )
           .orderBy(desc(auraMemberships.updatedAt))
           .limit(100),
+        db
+          .select({
+            id: serverAuraMemberships.id,
+            serverId: serverAuraMemberships.serverId,
+            serverName: servers.name,
+            tier: serverAuraMemberships.tier,
+            source: serverAuraMemberships.source,
+            expiresAt: serverAuraMemberships.expiresAt,
+          })
+          .from(serverAuraMemberships)
+          .innerJoin(servers, eq(serverAuraMemberships.serverId, servers.id))
+          .where(
+            or(
+              isNull(serverAuraMemberships.expiresAt),
+              gt(serverAuraMemberships.expiresAt, new Date().toISOString()),
+            ),
+          )
+          .orderBy(desc(serverAuraMemberships.updatedAt))
+          .limit(100),
       ]);
-      owner = { codes, memberships };
+      owner = { codes, memberships, servers: auraServers };
     }
 
     return apiJson({
       membership: membership
         ? { ...membership, active: isAuraActive(membership.expiresAt) }
+        : null,
+      serverMembership: serverMembership
+        ? { ...serverMembership, active: isAuraActive(serverMembership.expiresAt) }
         : null,
       owner,
       perks: [
@@ -147,6 +197,13 @@ export async function GET(request: Request) {
         "Aura renkleri ve destekçi görünümü",
         "Süreli veya süresiz hediye üyelik",
         "Öncelikli deneysel özellik erişimi",
+      ],
+      serverPerks: [
+        "256 kbps ses odaları ve daha net görüşmeler",
+        "Topluluk profilinde Aura vitrini",
+        "Daha yüksek dosya ve yayın sınırlarına hazır altyapı",
+        "Özel topluluk temaları ve etkinlik vurguları",
+        "Gelişmiş moderasyon içgörüleri",
       ],
     });
   } catch (error) {
@@ -315,6 +372,59 @@ export async function POST(request: Request) {
             eq(auraCodes.createdByProfileId, profile.id),
           ),
         );
+      return apiJson({ ok: true });
+    }
+
+    if (payload.action === "grant-server") {
+      const serverId = cleanText(payload.serverId, { max: 80 });
+      const durationDays = validatedDuration(payload.durationDays, true);
+      const tier = Number(payload.tier ?? 1);
+      if (!Number.isInteger(tier) || tier < 1 || tier > 3) {
+        throw new ApiError(400, "Aura topluluk seviyesi 1–3 arasında olmalı.");
+      }
+      const [targetServer] = await db
+        .select({ id: servers.id })
+        .from(servers)
+        .where(eq(servers.id, serverId))
+        .limit(1);
+      if (!targetServer) throw new ApiError(404, "Topluluk bulunamadı.");
+      const [current] = await db
+        .select()
+        .from(serverAuraMemberships)
+        .where(eq(serverAuraMemberships.serverId, serverId))
+        .limit(1);
+      const now = new Date().toISOString();
+      const expiresAt = membershipExpiry(current?.expiresAt, durationDays, Boolean(current));
+      await db
+        .insert(serverAuraMemberships)
+        .values({
+          id: crypto.randomUUID(),
+          serverId,
+          tier,
+          source: "owner",
+          grantedByProfileId: profile.id,
+          expiresAt,
+          createdAt: current?.createdAt || now,
+          updatedAt: now,
+        })
+        .onConflictDoUpdate({
+          target: serverAuraMemberships.serverId,
+          set: {
+            tier,
+            source: "owner",
+            grantedByProfileId: profile.id,
+            expiresAt,
+            updatedAt: now,
+          },
+        });
+      return apiJson({ ok: true, expiresAt });
+    }
+
+    if (payload.action === "revoke-server") {
+      const serverId = cleanText(payload.serverId, { max: 80 });
+      await db
+        .delete(serverAuraMemberships)
+        .where(eq(serverAuraMemberships.serverId, serverId));
       return apiJson({ ok: true });
     }
 

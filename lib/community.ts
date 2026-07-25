@@ -1,7 +1,8 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { getDb } from "@/db";
 import {
   auditLogs,
+  channelPermissionOverwrites,
   channels,
   memberRoles,
   profiles,
@@ -13,6 +14,12 @@ import type { RequestIdentity } from "@/lib/identity";
 import { ApiError } from "@/lib/security";
 
 export const DEFAULT_SERVER_ID = "kuzens";
+const PRIMARY_OWNER_EMAILS = new Set(["ibrahimilhan159@gmail.com"]);
+
+export function isPrimaryOwnerEmail(email: string) {
+  return PRIMARY_OWNER_EMAILS.has(email.trim().toLocaleLowerCase("en-US"));
+}
+
 export const PERMISSIONS = {
   manageServer: 1,
   manageChannels: 2,
@@ -22,8 +29,11 @@ export const PERMISSIONS = {
   banMembers: 32,
   joinVoice: 64,
   shareScreen: 128,
+  viewChannels: 256,
+  sendMessages: 512,
+  speakVoice: 1024,
 } as const;
-export const ALL_PERMISSIONS = 255;
+export const ALL_PERMISSIONS = 2047;
 
 const defaultChannels = [
   { id: "genel", serverId: DEFAULT_SERVER_ID, name: "genel", kind: "text" as const, position: 0 },
@@ -37,8 +47,8 @@ export function defaultRoles(serverId = DEFAULT_SERVER_ID) {
   const now = new Date().toISOString();
   return [
     { id: `${serverId}:owner`, serverId, name: "Kurucu", color: "#ffd166", permissions: ALL_PERMISSIONS, position: 0, createdAt: now },
-    { id: `${serverId}:moderator`, serverId, name: "Moderatör", color: "#9c7cff", permissions: 123, position: 1, createdAt: now },
-    { id: `${serverId}:member`, serverId, name: "Kuzen", color: "#5be39a", permissions: 192, position: 2, createdAt: now },
+    { id: `${serverId}:moderator`, serverId, name: "Moderatör", color: "#9c7cff", permissions: 2046, position: 1, createdAt: now },
+    { id: `${serverId}:member`, serverId, name: "Kuzen", color: "#5be39a", permissions: 1984, position: 2, createdAt: now },
   ];
 }
 
@@ -130,7 +140,7 @@ export async function permissionsFor(
     return ALL_PERMISSIONS;
   }
   const memberTag = `@${profile.username}`;
-  const [assignment] = await db
+  const assignments = await db
     .select()
     .from(memberRoles)
     .where(
@@ -138,11 +148,75 @@ export async function permissionsFor(
         eq(memberRoles.serverId, serverId),
         eq(memberRoles.memberTag, memberTag),
       ),
-    )
-    .limit(1);
-  const roleId = assignment?.roleId || `${serverId}:member`;
-  const [role] = await db.select().from(roles).where(eq(roles.id, roleId)).limit(1);
-  return role?.permissions ?? 0;
+    );
+  const roleIds = Array.from(
+    new Set([
+      `${serverId}:member`,
+      ...assignments.map((assignment) => assignment.roleId),
+    ]),
+  );
+  const roleRows = await db.select().from(roles).where(inArray(roles.id, roleIds));
+  return roleRows.reduce(
+    (permissions, role) => permissions | role.permissions,
+    0,
+  );
+}
+
+export async function channelPermissionsFor(
+  profile: typeof profiles.$inferSelect,
+  serverId: string,
+  channelId: string,
+) {
+  const db = getDb();
+  const basePermissions = await permissionsFor(profile, serverId);
+  if ((basePermissions & PERMISSIONS.manageServer) !== 0) return ALL_PERMISSIONS;
+
+  const assignments = await db
+    .select({ roleId: memberRoles.roleId })
+    .from(memberRoles)
+    .where(
+      and(
+        eq(memberRoles.serverId, serverId),
+        eq(memberRoles.memberTag, `@${profile.username}`),
+      ),
+    );
+  const roleIds = Array.from(
+    new Set([
+      `${serverId}:member`,
+      ...assignments.map((assignment) => assignment.roleId),
+    ]),
+  );
+  const overwrites = await db
+    .select()
+    .from(channelPermissionOverwrites)
+    .where(
+      and(
+        eq(channelPermissionOverwrites.channelId, channelId),
+        inArray(channelPermissionOverwrites.roleId, roleIds),
+      ),
+    );
+  const denied = overwrites.reduce(
+    (permissions, overwrite) => permissions | overwrite.denyPermissions,
+    0,
+  );
+  const allowed = overwrites.reduce(
+    (permissions, overwrite) => permissions | overwrite.allowPermissions,
+    0,
+  );
+  return (basePermissions & ~denied) | allowed;
+}
+
+export async function requireChannelPermission(
+  profile: typeof profiles.$inferSelect,
+  permission: number,
+  serverId: string,
+  channelId: string,
+) {
+  const permissions = await channelPermissionsFor(profile, serverId, channelId);
+  if ((permissions & permission) !== permission) {
+    throw new ApiError(403, "Bu odada bu işlemi yapma yetkin yok.");
+  }
+  return permissions;
 }
 
 export async function requirePermission(

@@ -9,6 +9,7 @@ import {
 import {
   PERMISSIONS,
   permissionsFor,
+  requireChannelPermission,
   requireMember,
 } from "@/lib/community";
 import {
@@ -57,6 +58,12 @@ export async function POST(request: Request) {
         .limit(1);
       if (!pollWithServer) throw new ApiError(404, "Anket bulunamadı.");
       const { db, profile } = await requireMember(identity, pollWithServer.serverId);
+      await requireChannelPermission(
+        profile,
+        PERMISSIONS.viewChannels,
+        pollWithServer.serverId,
+        pollWithServer.poll.channelId,
+      );
       if (
         pollWithServer.poll.closedAt ||
         new Date(pollWithServer.poll.closesAt).getTime() <= Date.now()
@@ -120,6 +127,12 @@ export async function POST(request: Request) {
       )
       .limit(1);
     if (!channel) throw new ApiError(404, "Metin odası bulunamadı.");
+    await requireChannelPermission(
+      profile,
+      PERMISSIONS.sendMessages,
+      serverId,
+      channelId,
+    );
     const question = cleanText(payload.question, { min: 2, max: 200 });
     if (!Array.isArray(payload.options) || payload.options.length < 2 || payload.options.length > 10) {
       throw new ApiError(400, "Ankette 2 ile 10 arasında seçenek olmalı.");

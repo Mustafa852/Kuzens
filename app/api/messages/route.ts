@@ -18,6 +18,7 @@ import {
   DEFAULT_SERVER_ID,
   PERMISSIONS,
   permissionsFor,
+  requireChannelPermission,
   requireMember,
   writeAudit,
 } from "@/lib/community";
@@ -238,9 +239,16 @@ export async function GET(request: Request) {
     const serverId = cleanText(url.searchParams.get("server") || DEFAULT_SERVER_ID, { max: 80 });
     const { db, profile } = await requireMember(identity, serverId);
     const channelId = cleanText(url.searchParams.get("channel") || "genel", { max: 80 });
-    if (!(await requireTextChannel(db, channelId, serverId))) {
+    const channel = await requireTextChannel(db, channelId, serverId);
+    if (!channel) {
       return apiJson({ error: "Metin odası bulunamadı." }, { status: 404 });
     }
+    await requireChannelPermission(
+      profile,
+      PERMISSIONS.viewChannels,
+      serverId,
+      channelId,
+    );
 
     const after = url.searchParams.get("after");
     if (after) {
@@ -295,6 +303,12 @@ export async function POST(request: Request) {
     if (!channel) {
       return apiJson({ error: "Metin odası bulunamadı." }, { status: 404 });
     }
+    await requireChannelPermission(
+      profile,
+      PERMISSIONS.sendMessages,
+      serverId,
+      channelId,
+    );
     const permissions = await permissionsFor(profile, serverId);
     if (
       (content.includes("@everyone") || content.includes("@here")) &&

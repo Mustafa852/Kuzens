@@ -1,10 +1,11 @@
-import { count, eq, sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { invites, memberRoles, profiles, servers } from "@/db/schema";
 import {
   DEFAULT_SERVER_ID,
   ensureCommunity,
   ensureMembership,
   findProfile,
+  isPrimaryOwnerEmail,
 } from "@/lib/community";
 import {
   apiError,
@@ -31,13 +32,33 @@ type RegistrationPayload = {
 export async function GET(request: Request) {
   try {
     const identity = requireIdentity(request);
-    const profile = await findProfile(identity);
-    if (profile?.isOwner) {
+    let profile = await findProfile(identity);
+    if (profile && isPrimaryOwnerEmail(identity.email) && !profile.isOwner) {
       const { getDb } = await import("@/db");
       await getDb()
+        .update(profiles)
+        .set({ isOwner: true })
+        .where(eq(profiles.id, profile.id));
+      profile = { ...profile, isOwner: true };
+    }
+    if (profile?.isOwner) {
+      const { getDb } = await import("@/db");
+      const db = getDb();
+      await db
         .update(servers)
         .set({ ownerProfileId: profile.id })
         .where(eq(servers.id, DEFAULT_SERVER_ID));
+      await ensureMembership(profile.id, DEFAULT_SERVER_ID);
+      await db
+        .insert(memberRoles)
+        .values({
+          id: `${DEFAULT_SERVER_ID}:@${profile.username}:owner`,
+          serverId: DEFAULT_SERVER_ID,
+          memberTag: `@${profile.username}`,
+          roleId: `${DEFAULT_SERVER_ID}:owner`,
+          createdAt: new Date().toISOString(),
+        })
+        .onConflictDoNothing();
     }
     return apiJson({
       profile: profile ?? null,
@@ -86,8 +107,7 @@ export async function POST(request: Request) {
     const existing = await findProfile(identity);
     if (existing) return apiJson({ profile: existing });
 
-    const [{ value: profileCount }] = await db.select({ value: count() }).from(profiles);
-    const isOwner = profileCount === 0;
+    const isOwner = isPrimaryOwnerEmail(identity.email);
     let invite: typeof invites.$inferSelect | undefined;
     if (!isOwner) {
       const inviteCode =
@@ -134,7 +154,7 @@ export async function POST(request: Request) {
     await db
       .insert(memberRoles)
       .values({
-        id: `${targetServerId}:@${username}`,
+        id: `${targetServerId}:@${username}:${isOwner ? "owner" : "member"}`,
         serverId: targetServerId,
         memberTag: `@${username}`,
         roleId: `${targetServerId}:${isOwner ? "owner" : "member"}`,

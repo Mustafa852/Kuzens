@@ -1,6 +1,11 @@
 import { and, eq } from "drizzle-orm";
 import { channels, messageReactions, messages } from "@/db/schema";
-import { DEFAULT_SERVER_ID, requireMember } from "@/lib/community";
+import {
+  DEFAULT_SERVER_ID,
+  PERMISSIONS,
+  requireChannelPermission,
+  requireMember,
+} from "@/lib/community";
 import {
   apiError,
   apiJson,
@@ -47,6 +52,12 @@ export async function POST(request: Request) {
     if (!channel) {
       return apiJson({ error: "Mesaj bu topluluğa ait değil." }, { status: 403 });
     }
+    await requireChannelPermission(
+      profile,
+      PERMISSIONS.viewChannels,
+      serverId,
+      channel.id,
+    );
     const id = `${messageId}:${profile.id}:${emoji}`;
     const [existing] = await db
       .select({ id: messageReactions.id })

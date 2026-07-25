@@ -4,6 +4,17 @@ export const servers = sqliteTable("servers", {
   id: text("id").primaryKey(),
   name: text("name").notNull(),
   icon: text("icon").notNull().default("K"),
+  description: text("description").notNull().default(""),
+  defaultNotificationLevel: text("default_notification_level", {
+    enum: ["all", "mentions"],
+  })
+    .notNull()
+    .default("mentions"),
+  explicitContentFilter: integer("explicit_content_filter", { mode: "boolean" })
+    .notNull()
+    .default(true),
+  preferredLocale: text("preferred_locale").notNull().default("tr"),
+  systemChannelId: text("system_channel_id"),
   ownerProfileId: text("owner_profile_id"),
   createdAt: text("created_at").notNull(),
 });
@@ -17,6 +28,9 @@ export const channels = sqliteTable(
     kind: text("kind", { enum: ["text", "voice"] }).notNull(),
     topic: text("topic"),
     slowModeSeconds: integer("slow_mode_seconds").notNull().default(0),
+    bitrate: integer("bitrate").notNull().default(64_000),
+    userLimit: integer("user_limit").notNull().default(0),
+    region: text("region").notNull().default("auto"),
     position: integer("position").notNull().default(0),
     createdAt: text("created_at").notNull(),
   },
@@ -96,7 +110,32 @@ export const memberRoles = sqliteTable(
     createdAt: text("created_at").notNull(),
   },
   (table) => [
-    uniqueIndex("member_roles_server_member_idx").on(table.serverId, table.memberTag),
+    uniqueIndex("member_roles_server_member_role_idx").on(
+      table.serverId,
+      table.memberTag,
+      table.roleId,
+    ),
+    index("member_roles_server_member_idx").on(table.serverId, table.memberTag),
+  ],
+);
+
+export const channelPermissionOverwrites = sqliteTable(
+  "channel_permission_overwrites",
+  {
+    id: text("id").primaryKey(),
+    channelId: text("channel_id").notNull(),
+    roleId: text("role_id").notNull(),
+    allowPermissions: integer("allow_permissions").notNull().default(0),
+    denyPermissions: integer("deny_permissions").notNull().default(0),
+    updatedByProfileId: text("updated_by_profile_id").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("channel_overwrites_channel_role_idx").on(
+      table.channelId,
+      table.roleId,
+    ),
+    index("channel_overwrites_channel_idx").on(table.channelId),
   ],
 );
 
@@ -277,6 +316,24 @@ export const auraMemberships = sqliteTable(
   (table) => [
     uniqueIndex("aura_memberships_profile_idx").on(table.profileId),
     index("aura_memberships_expiry_idx").on(table.expiresAt),
+  ],
+);
+
+export const serverAuraMemberships = sqliteTable(
+  "server_aura_memberships",
+  {
+    id: text("id").primaryKey(),
+    serverId: text("server_id").notNull(),
+    tier: integer("tier").notNull().default(1),
+    source: text("source", { enum: ["owner", "campaign", "purchase"] }).notNull(),
+    grantedByProfileId: text("granted_by_profile_id"),
+    expiresAt: text("expires_at"),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("server_aura_server_idx").on(table.serverId),
+    index("server_aura_expiry_idx").on(table.expiresAt),
   ],
 );
 

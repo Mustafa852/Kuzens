@@ -18,6 +18,10 @@ type Channel = {
   kind: "text" | "voice";
   topic?: string | null;
   slowModeSeconds?: number;
+  bitrate?: number;
+  userLimit?: number;
+  region?: string;
+  permissions?: number;
   position: number;
   unreadCount?: number;
   mentionCount?: number;
@@ -129,6 +133,14 @@ type RoleAssignment = {
   roleId: string;
 };
 
+type ChannelPermissionOverwrite = {
+  id?: string;
+  channelId: string;
+  roleId: string;
+  allowPermissions: number;
+  denyPermissions: number;
+};
+
 type Member = {
   id: string;
   name: string;
@@ -141,6 +153,7 @@ type Member = {
   presenceStatus?: "online" | "idle" | "dnd" | "invisible" | "offline";
   bio?: string;
   role: { id: string; name: string; color: string } | null;
+  roles?: Array<{ id: string; name: string; color: string }>;
 };
 
 type BannedMember = {
@@ -164,6 +177,11 @@ type CommunityServer = {
   id: string;
   name: string;
   icon: string;
+  description?: string;
+  defaultNotificationLevel?: "all" | "mentions";
+  explicitContentFilter?: boolean;
+  preferredLocale?: string;
+  systemChannelId?: string | null;
   ownerProfileId?: string | null;
 };
 
@@ -211,6 +229,19 @@ type AuraOwnerMembership = {
   displayName: string;
   source: string;
   expiresAt: string | null;
+};
+
+type ServerAuraMembership = {
+  id: string;
+  serverId: string;
+  tier: number;
+  source: string;
+  expiresAt: string | null;
+  active: boolean;
+};
+
+type AuraOwnerServer = Omit<ServerAuraMembership, "active"> & {
+  serverName: string;
 };
 
 type AppPreferences = {
@@ -354,6 +385,17 @@ const permissionOptions = [
   { bit: 32, label: "Üyeleri yasakla", detail: "Kalıcı erişim engeli uygulama" },
   { bit: 64, label: "Ses odalarına katıl", detail: "Sesli odalara bağlanma" },
   { bit: 128, label: "Ekran paylaş", detail: "Ses odasında ekran yayını açma" },
+  { bit: 256, label: "Odaları gör", detail: "İzin verilen metin ve ses odalarını görüntüleme" },
+  { bit: 512, label: "Mesaj gönder", detail: "Metin odalarında mesaj, anket ve yanıt gönderme" },
+  { bit: 1024, label: "Sesli konuş", detail: "Katıldığı ses odasında mikrofon kullanma" },
+];
+
+const channelPermissionOptions = [
+  { bit: 256, label: "Odayı gör", kinds: ["text", "voice"] as const },
+  { bit: 512, label: "Mesaj gönder", kinds: ["text"] as const },
+  { bit: 64, label: "Odaya katıl", kinds: ["voice"] as const },
+  { bit: 1024, label: "Konuş", kinds: ["voice"] as const },
+  { bit: 128, label: "Ekran paylaş", kinds: ["voice"] as const },
 ];
 
 const fallbackChannels: Channel[] = [
@@ -765,18 +807,31 @@ export function KuzensApp() {
   const [sharing, setSharing] = useState(false);
   const [toast, setToast] = useState<Toast | null>(null);
   const [modal, setModal] = useState<
-    "channel" | "channelSettings" | "channelNotifications" | "roles" | "server" | "serverSettings" | "friends" | "profile" | "memberProfile" | "notifications" | "aura" | "preferences" | "directMessages" | "auditLog" | "events" | "automod" | "bookmarks" | "poll" | "thread" | "guide" | null
+    "channel" | "channelSettings" | "channelNotifications" | "roles" | "server" | "serverSettings" | "friends" | "account" | "profile" | "memberProfile" | "notifications" | "aura" | "preferences" | "directMessages" | "auditLog" | "events" | "automod" | "bookmarks" | "poll" | "thread" | "guide" | null
   >(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [newServerName, setNewServerName] = useState("");
   const [serverSettingsName, setServerSettingsName] = useState("");
   const [serverSettingsIcon, setServerSettingsIcon] = useState("");
+  const [serverSettingsDescription, setServerSettingsDescription] = useState("");
+  const [serverDefaultNotifications, setServerDefaultNotifications] = useState<"all" | "mentions">("mentions");
+  const [serverExplicitFilter, setServerExplicitFilter] = useState(true);
+  const [serverPreferredLocale, setServerPreferredLocale] = useState("tr");
+  const [serverSystemChannelId, setServerSystemChannelId] = useState("");
   const [serverSaving, setServerSaving] = useState(false);
   const [newChannelName, setNewChannelName] = useState("");
   const [newChannelKind, setNewChannelKind] = useState<"text" | "voice">("text");
   const [channelSettingsName, setChannelSettingsName] = useState("");
   const [channelSettingsTopic, setChannelSettingsTopic] = useState("");
   const [channelSlowMode, setChannelSlowMode] = useState(0);
+  const [channelBitrate, setChannelBitrate] = useState(64_000);
+  const [channelUserLimit, setChannelUserLimit] = useState(0);
+  const [channelRegion, setChannelRegion] = useState("auto");
+  const [channelPermissionRoles, setChannelPermissionRoles] = useState<Role[]>([]);
+  const [channelPermissionOverwrites, setChannelPermissionOverwrites] = useState<
+    ChannelPermissionOverwrite[]
+  >([]);
+  const [channelPermissionsLoading, setChannelPermissionsLoading] = useState(false);
   const [profileDisplayName, setProfileDisplayName] = useState("");
   const [profileUsername, setProfileUsername] = useState("");
   const [profileBio, setProfileBio] = useState("");
@@ -785,6 +840,9 @@ export function KuzensApp() {
     "online" | "idle" | "dnd" | "invisible"
   >("online");
   const [profileSaving, setProfileSaving] = useState(false);
+  const [accountDeleteUsername, setAccountDeleteUsername] = useState("");
+  const [accountDeleteConfirmation, setAccountDeleteConfirmation] = useState("");
+  const [accountDeleting, setAccountDeleting] = useState(false);
   const [notifications, setNotifications] = useState<MentionNotification[]>([]);
   const [viewingMember, setViewingMember] = useState<Member | null>(null);
   const [showPinnedOnly, setShowPinnedOnly] = useState(false);
@@ -807,14 +865,18 @@ export function KuzensApp() {
   const [friendUsername, setFriendUsername] = useState("");
   const [friendsLoading, setFriendsLoading] = useState(false);
   const [auraMembership, setAuraMembership] = useState<AuraMembership | null>(null);
+  const [serverAuraMembership, setServerAuraMembership] = useState<ServerAuraMembership | null>(null);
   const [auraPerks, setAuraPerks] = useState<string[]>([]);
+  const [serverAuraPerks, setServerAuraPerks] = useState<string[]>([]);
   const [auraCodes, setAuraCodes] = useState<AuraCode[]>([]);
   const [auraMembers, setAuraMembers] = useState<AuraOwnerMembership[]>([]);
+  const [auraServers, setAuraServers] = useState<AuraOwnerServer[]>([]);
   const [auraRedeemCode, setAuraRedeemCode] = useState("");
   const [auraGrantUsername, setAuraGrantUsername] = useState("");
   const [auraDuration, setAuraDuration] = useState<30 | 90 | 365 | 0>(30);
   const [auraCodeDuration, setAuraCodeDuration] = useState<30 | 90 | 365>(30);
   const [auraMaxUses, setAuraMaxUses] = useState(1);
+  const [auraServerTier, setAuraServerTier] = useState<1 | 2 | 3>(1);
   const [auraBusy, setAuraBusy] = useState(false);
   const [freshAuraCode, setFreshAuraCode] = useState("");
   const [preferences, setPreferences] = useState<AppPreferences>(defaultPreferences);
@@ -932,7 +994,6 @@ export function KuzensApp() {
     servers.find((server) => server.id === activeServerId) ||
     ({ id: "kuzens", name: "Kuzens", icon: "KZ" } satisfies CommunityServer);
   const selectedRole = roleItems.find((role) => role.id === selectedRoleId);
-  const defaultMemberRoleId = roleItems.find((role) => role.id.endsWith(":member"))?.id || "";
   const textChannels = channels.filter((channel) => channel.kind === "text");
   const voiceChannels = channels.filter((channel) => channel.kind === "voice");
   const favoriteChannels = channels.filter((channel) => favoriteChannelIds.has(channel.id));
@@ -965,6 +1026,17 @@ export function KuzensApp() {
   const canManageMessages = (permissions & 8) !== 0;
   const canKickMembers = (permissions & 16) !== 0;
   const canBanMembers = (permissions & 32) !== 0;
+  const voiceBitrateLimit = profile?.isOwner
+    ? 384_000
+    : serverAuraMembership?.active
+      ? [64_000, 128_000, 192_000, 256_000][serverAuraMembership.tier] || 128_000
+      : 64_000;
+  const canSpeakInConnectedVoice =
+    !connectedVoiceChannel ||
+    (((connectedVoiceChannel.permissions ?? permissions) & 1024) !== 0);
+  const canShareInConnectedVoice =
+    !connectedVoiceChannel ||
+    (((connectedVoiceChannel.permissions ?? permissions) & 128) !== 0);
   const ownsActiveServer =
     activeServerId === "kuzens"
       ? Boolean(profile?.isOwner)
@@ -1318,8 +1390,10 @@ export function KuzensApp() {
   }, [profile]);
 
   useEffect(() => {
-    if (profile) void loadAura();
-  }, [profile]);
+    if (profile && activeServerId) void loadAura();
+    // loadAura is a component helper; the server/profile keys are the intentional refresh boundary.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeServerId, profile]);
 
   useEffect(() => {
     if (!profile) return;
@@ -1558,7 +1632,9 @@ export function KuzensApp() {
         voiceConnected
       ) {
         event.preventDefault();
-        if (preferences.pushToTalk) {
+        if (!canSpeakInConnectedVoice) {
+          setToast({ text: "Bu odada konuşma yetkin yok. Dinleyici modundasın.", tone: "danger" });
+        } else if (preferences.pushToTalk) {
           setToast({ text: "Bas-konuş açık: konuşmak için Boşluk tuşunu basılı tut." });
         } else {
           setMuted((current) => {
@@ -1597,6 +1673,7 @@ export function KuzensApp() {
         event.code === "Space" &&
         preferences.pushToTalk &&
         voiceConnected &&
+        canSpeakInConnectedVoice &&
         !typing
       ) {
         event.preventDefault();
@@ -1622,7 +1699,7 @@ export function KuzensApp() {
       window.removeEventListener("keydown", keyboardShortcut);
       window.removeEventListener("keyup", keyboardShortcut);
     };
-  }, [activeChannel, channels, preferences.pushToTalk, voiceConnected]);
+  }, [activeChannel, canSpeakInConnectedVoice, channels, preferences.pushToTalk, voiceConnected]);
 
   useEffect(() => {
     const connections = peerConnections.current;
@@ -1690,6 +1767,9 @@ export function KuzensApp() {
 
     for (const stream of [voiceStream.current, displayStream.current]) {
       stream?.getTracks().forEach((track) => connection.addTrack(track, stream));
+    }
+    if (!voiceStream.current?.getAudioTracks().length) {
+      connection.addTransceiver("audio", { direction: "recvonly" });
     }
     connection.addEventListener("icecandidate", (event) => {
       if (event.candidate) {
@@ -1822,10 +1902,11 @@ export function KuzensApp() {
 
   async function joinVoice(channel: Channel) {
     if (channel.kind !== "voice") return;
-    if ((permissions & 64) === 0) {
+    if (((channel.permissions ?? permissions) & 64) === 0) {
       setToast({ text: "Bu ses odasına katılma yetkin yok.", tone: "danger" });
       return;
     }
+    const canSpeak = ((channel.permissions ?? permissions) & 1024) !== 0;
     if (voiceConnected && connectedVoiceChannelId === channel.id) return;
 
     try {
@@ -1835,7 +1916,12 @@ export function KuzensApp() {
         if (previewVideo.current) previewVideo.current.srcObject = null;
       }
       let stream = voiceStream.current;
-      if (!stream) {
+      if (!canSpeak) {
+        stream?.getTracks().forEach((track) => track.stop());
+        stream = new MediaStream();
+        voiceStream.current = stream;
+      } else if (!stream || !stream.getAudioTracks().length) {
+        stream?.getTracks().forEach((track) => track.stop());
         stream = await navigator.mediaDevices.getUserMedia({
           audio: {
             ...(preferences.inputDeviceId
@@ -1868,17 +1954,19 @@ export function KuzensApp() {
       rtcSyncAt.current = new Date(Date.now() - 30_000).toISOString();
       rtcChannelId.current = channel.id;
       stream.getAudioTracks().forEach((track) => {
-        track.enabled = !preferences.pushToTalk;
+        track.enabled = canSpeak && !preferences.pushToTalk;
       });
       setConnectedVoiceChannelId(channel.id);
       setVoiceConnected(true);
-      setMuted(preferences.pushToTalk);
+      setMuted(!canSpeak || preferences.pushToTalk);
       setPttPressed(false);
       setSharing(false);
       setToast({
-        text: voiceConnected
-          ? `${channel.name} ses odasına geçtin.`
-          : `${channel.name} ses odasına katıldın.`,
+        text: canSpeak
+          ? voiceConnected
+            ? `${channel.name} ses odasına geçtin.`
+            : `${channel.name} ses odasına katıldın.`
+          : `${channel.name} odasına dinleyici olarak katıldın.`,
         tone: "success",
       });
     } catch (error) {
@@ -1898,6 +1986,10 @@ export function KuzensApp() {
   }
 
   function toggleMute() {
+    if (!canSpeakInConnectedVoice) {
+      setToast({ text: "Bu odada konuşma yetkin yok. Dinleyici modundasın.", tone: "danger" });
+      return;
+    }
     if (preferences.pushToTalk) {
       setToast({ text: "Bas-konuş açık: konuşmak için Boşluk tuşunu basılı tut." });
       return;
@@ -1910,6 +2002,10 @@ export function KuzensApp() {
   }
 
   async function toggleShare() {
+    if (!sharing && !canShareInConnectedVoice) {
+      setToast({ text: "Bu odada ekran paylaşma yetkin yok.", tone: "danger" });
+      return;
+    }
     if (sharing) {
       const tracks = displayStream.current?.getTracks() || [];
       peerConnections.current.forEach((connection, profileId) => {
@@ -2360,13 +2456,70 @@ export function KuzensApp() {
     });
   }
 
-  function openChannelSettings(channel: Channel) {
+  async function openChannelSettings(channel: Channel) {
     setActiveChannel(channel.id);
     setChannelSettingsName(channel.name);
     setChannelSettingsTopic(channel.topic || "");
     setChannelSlowMode(channel.slowModeSeconds || 0);
+    setChannelBitrate(channel.bitrate || 64_000);
+    setChannelUserLimit(channel.userLimit || 0);
+    setChannelRegion(channel.region || "auto");
+    setChannelPermissionRoles([]);
+    setChannelPermissionOverwrites([]);
     setContextMenu(null);
     setModal("channelSettings");
+    setChannelPermissionsLoading(true);
+    try {
+      const response = await apiFetch(
+        `/api/channel-permissions?server=${encodeURIComponent(activeServerId)}&channel=${encodeURIComponent(channel.id)}`,
+      );
+      if (!response.ok) {
+        throw new Error(
+          await responseError(response, "Oda izinleri yüklenemedi."),
+        );
+      }
+      const data = (await response.json()) as {
+        roles?: Role[];
+        overwrites?: ChannelPermissionOverwrite[];
+      };
+      setChannelPermissionRoles(data.roles || []);
+      setChannelPermissionOverwrites(data.overwrites || []);
+    } catch (error) {
+      setToast({
+        text:
+          error instanceof Error ? error.message : "Oda izinleri yüklenemedi.",
+        tone: "danger",
+      });
+    } finally {
+      setChannelPermissionsLoading(false);
+    }
+  }
+
+  function setChannelRolePermission(
+    roleId: string,
+    bit: number,
+    state: "inherit" | "allow" | "deny",
+  ) {
+    setChannelPermissionOverwrites((current) => {
+      const existing = current.find((item) => item.roleId === roleId) || {
+        channelId: activeChannel,
+        roleId,
+        allowPermissions: 0,
+        denyPermissions: 0,
+      };
+      let allowPermissions = existing.allowPermissions & ~bit;
+      let denyPermissions = existing.denyPermissions & ~bit;
+      if (state === "allow") allowPermissions |= bit;
+      if (state === "deny") denyPermissions |= bit;
+      const next = {
+        ...existing,
+        allowPermissions,
+        denyPermissions,
+      };
+      return current.some((item) => item.roleId === roleId)
+        ? current.map((item) => (item.roleId === roleId ? next : item))
+        : [...current, next];
+    });
   }
 
   function openChannelNotifications(channel: Channel) {
@@ -2799,6 +2952,9 @@ export function KuzensApp() {
         name: channelSettingsName,
         topic: channelSettingsTopic,
         slowModeSeconds: channelSlowMode,
+        bitrate: channelBitrate,
+        userLimit: channelUserLimit,
+        region: channelRegion,
       }),
     });
     if (!response.ok) {
@@ -2806,6 +2962,29 @@ export function KuzensApp() {
       return;
     }
     const data = (await response.json()) as { channel: Channel };
+    const permissionsResponse = await apiFetch("/api/channel-permissions", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        serverId: activeServerId,
+        channelId: selected.id,
+        overwrites: channelPermissionOverwrites.map((overwrite) => ({
+          roleId: overwrite.roleId,
+          allowPermissions: overwrite.allowPermissions,
+          denyPermissions: overwrite.denyPermissions,
+        })),
+      }),
+    });
+    if (!permissionsResponse.ok) {
+      setToast({
+        text: await responseError(
+          permissionsResponse,
+          "Oda izinleri kaydedilemedi.",
+        ),
+        tone: "danger",
+      });
+      return;
+    }
     setChannels((current) =>
       current.map((channel) => (channel.id === data.channel.id ? data.channel : channel)),
     );
@@ -2952,6 +3131,44 @@ export function KuzensApp() {
     }
   }
 
+  async function deleteAccount(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (
+      !profile ||
+      accountDeleteUsername !== profile.username ||
+      accountDeleteConfirmation !== "HESABIMI SİL" ||
+      !window.confirm(
+        "Kuzens hesabın ve kişisel verilerin kalıcı olarak silinecek. Devam edilsin mi?",
+      )
+    ) {
+      return;
+    }
+    setAccountDeleting(true);
+    try {
+      const response = await apiFetch("/api/account", {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          username: accountDeleteUsername,
+          confirmation: accountDeleteConfirmation,
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(await responseError(response, "Hesap silinemedi."));
+      }
+      setProfile(null);
+      setModal(null);
+      window.location.reload();
+    } catch (error) {
+      setToast({
+        text: error instanceof Error ? error.message : "Hesap silinemedi.",
+        tone: "danger",
+      });
+    } finally {
+      setAccountDeleting(false);
+    }
+  }
+
   async function createChannel(event: FormEvent) {
     event.preventDefault();
     const name = newChannelName.trim().toLocaleLowerCase("tr-TR").replace(/\s+/g, "-");
@@ -3081,16 +3298,20 @@ export function KuzensApp() {
     );
   }
 
-  function updateMemberRole(memberTag: string, roleId: string) {
+  function toggleMemberRole(memberTag: string, roleId: string) {
     setRoleAssignments((current) => {
-      const existing = current.find((item) => item.memberTag === memberTag);
-      if (existing) {
-        return current.map((item) => (item.memberTag === memberTag ? { ...item, roleId } : item));
+      const exists = current.some(
+        (item) => item.memberTag === memberTag && item.roleId === roleId,
+      );
+      if (exists) {
+        return current.filter(
+          (item) => !(item.memberTag === memberTag && item.roleId === roleId),
+        );
       }
       return [
         ...current,
         {
-          id: `${activeServerId}:${memberTag}`,
+          id: `${activeServerId}:${memberTag}:${roleId}`,
           serverId: activeServerId,
           memberTag,
           roleId,
@@ -3112,7 +3333,7 @@ export function KuzensApp() {
           serverId: activeServerId,
           name: newRoleName,
           color: newRoleColor,
-          permissions: 192,
+          permissions: 768,
         }),
       });
       if (!response.ok) throw new Error(await responseError(response, "Rol oluşturulamadı."));
@@ -3151,18 +3372,13 @@ export function KuzensApp() {
         }),
       });
       if (!response.ok) throw new Error(await responseError(response, "Rol silinemedi."));
-      const memberRoleId = roleItems.find((role) => role.id.endsWith(":member"))?.id || "";
       setRoleAssignments((current) =>
-        current.map((assignment) =>
-          assignment.roleId === selectedRole.id
-            ? { ...assignment, roleId: memberRoleId }
-            : assignment,
-        ),
+        current.filter((assignment) => assignment.roleId !== selectedRole.id),
       );
       const nextRoles = roleItems.filter((role) => role.id !== selectedRole.id);
       setRoleItems(nextRoles);
       setSelectedRoleId(nextRoles[0]?.id || "");
-      setToast({ text: "Rol silindi; üyeler Kuzen rolüne taşındı.", tone: "success" });
+      setToast({ text: "Rol ve bu role ait üye atamaları silindi.", tone: "success" });
     } catch (error) {
       setToast({
         text: error instanceof Error ? error.message : "Rol silinemedi.",
@@ -3188,11 +3404,9 @@ export function KuzensApp() {
           name: selectedRole.name,
           color: selectedRole.color,
           permissions: selectedRole.permissions,
-          assignments: members.map((member) => ({
-            memberTag: member.tag,
-            roleId:
-              roleAssignments.find((item) => item.memberTag === member.tag)?.roleId ||
-              roleItems.find((role) => role.id.endsWith(":member"))?.id,
+          assignments: roleAssignments.map((assignment) => ({
+            memberTag: assignment.memberTag,
+            roleId: assignment.roleId,
           })),
         }),
       });
@@ -3538,23 +3752,29 @@ export function KuzensApp() {
   }
 
   async function loadAura() {
-    const response = await apiFetch("/api/aura");
+    const response = await apiFetch(`/api/aura?serverId=${encodeURIComponent(activeServerId)}`);
     if (!response.ok) {
       setToast({ text: await responseError(response, "Aura bilgileri yüklenemedi."), tone: "danger" });
       return;
     }
     const data = (await response.json()) as {
       membership?: AuraMembership | null;
+      serverMembership?: ServerAuraMembership | null;
       perks?: string[];
+      serverPerks?: string[];
       owner?: {
         codes?: AuraCode[];
         memberships?: AuraOwnerMembership[];
+        servers?: AuraOwnerServer[];
       };
     };
     setAuraMembership(data.membership || null);
+    setServerAuraMembership(data.serverMembership || null);
     setAuraPerks(data.perks || []);
+    setServerAuraPerks(data.serverPerks || []);
     setAuraCodes(data.owner?.codes || []);
     setAuraMembers(data.owner?.memberships || []);
+    setAuraServers(data.owner?.servers || []);
   }
 
   function openAura() {
@@ -3628,6 +3848,25 @@ export function KuzensApp() {
     if (ok) setAuraGrantUsername("");
   }
 
+  async function grantServerAura() {
+    await auraAction(
+      {
+        action: "grant-server",
+        serverId: activeServerId,
+        tier: auraServerTier,
+        durationDays: auraDuration === 0 ? null : auraDuration,
+      },
+      `${activeServer.name} için Aura Topluluk ${auraServerTier} etkinleştirildi.`,
+    );
+  }
+
+  async function revokeServerAura() {
+    await auraAction(
+      { action: "revoke-server", serverId: activeServerId },
+      `${activeServer.name} için Aura Topluluk kaldırıldı.`,
+    );
+  }
+
   async function createServer(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const name = newServerName.trim();
@@ -3650,12 +3889,17 @@ export function KuzensApp() {
   }
 
   function openServerSettings() {
-    if (!ownsActiveServer) {
-      setToast({ text: "Topluluk ayarlarını yalnızca kurucu düzenleyebilir.", tone: "danger" });
+    if (!canManageServer) {
+      setToast({ text: "Topluluk ayarlarını düzenleme yetkin yok.", tone: "danger" });
       return;
     }
     setServerSettingsName(activeServer.name);
     setServerSettingsIcon(activeServer.icon);
+    setServerSettingsDescription(activeServer.description || "");
+    setServerDefaultNotifications(activeServer.defaultNotificationLevel || "mentions");
+    setServerExplicitFilter(activeServer.explicitContentFilter !== false);
+    setServerPreferredLocale(activeServer.preferredLocale || "tr");
+    setServerSystemChannelId(activeServer.systemChannelId || "");
     setContextMenu(null);
     setModal("serverSettings");
   }
@@ -3671,6 +3915,11 @@ export function KuzensApp() {
           id: activeServerId,
           name: serverSettingsName,
           icon: serverSettingsIcon,
+          description: serverSettingsDescription,
+          defaultNotificationLevel: serverDefaultNotifications,
+          explicitContentFilter: serverExplicitFilter,
+          preferredLocale: serverPreferredLocale,
+          systemChannelId: serverSystemChannelId || null,
         }),
       });
       if (!response.ok) {
@@ -3785,12 +4034,12 @@ export function KuzensApp() {
     >
       <aside className="server-rail" aria-label="Sunucular">
         <button className="brand-mark" aria-label="Kuzens ana sayfa">
-          K<span>.</span>
+          <span>K</span><b>Z</b>
         </button>
         <div className="rail-line" />
         {servers.map((server) => (
           <button
-            className={`server-badge ${server.id === activeServerId ? "active" : ""}`}
+            className={`server-badge ${server.id === activeServerId ? "active" : ""} ${server.id === activeServerId && serverAuraMembership?.active ? "aura-server-badge" : ""}`}
             aria-label={`${server.name} topluluğu`}
             key={server.id}
             onClick={() => void chooseServer(server.id)}
@@ -3824,13 +4073,19 @@ export function KuzensApp() {
           onContextMenu={(event) => openContextMenu(event, { kind: "server" })}
         >
           <div>
-            <span className="eyebrow">TOPLULUK</span>
-            <strong>{activeServer.name}</strong>
+            <span className="eyebrow">KUZENS TOPLULUĞU</span>
+            <strong>
+              {activeServer.name}
+              {serverAuraMembership?.active && <i className="server-aura-chip">AURA {serverAuraMembership.tier}</i>}
+            </strong>
+            <small className="server-description">
+              {activeServer.description || "Birlikte konuş, üret ve paylaş."}
+            </small>
           </div>
           <button
             className="icon-button"
             aria-label="Topluluk ayarları"
-            onClick={ownsActiveServer ? openServerSettings : openRoles}
+            onClick={canManageServer ? openServerSettings : openRoles}
           >
             •••
           </button>
@@ -3841,7 +4096,7 @@ export function KuzensApp() {
           <button onClick={openEvents}><span>◫</span> Etkinlikler ve takvim</button>
           <button onClick={() => void openServerGuide()}><span>✓</span> Başlangıç rehberi</button>
           <button onClick={openRoles}><span>♢</span> Roller ve yetkiler</button>
-          {ownsActiveServer && (
+          {canManageServer && (
             <button onClick={openServerSettings}><span>⚙</span> Topluluk ayarları</button>
           )}
           <button className="aura-entry" onClick={openAura}><span>✦</span> Kuzens Aura</button>
@@ -3982,7 +4237,7 @@ export function KuzensApp() {
             {preferences.pushToTalk ? "PTT" : "μ"}
           </button>
           <button className={deafened ? "control-active" : ""} onClick={() => setDeafened((value) => !value)} aria-label="Sesi aç veya kapat">◉</button>
-          <button onClick={() => void openPreferences()} aria-label="Görünüm ve ses ayarları">⚙</button>
+          <button onClick={() => setModal("account")} aria-label="Kullanıcı ayarları">⚙</button>
         </footer>
       </aside>
 
@@ -4958,6 +5213,64 @@ export function KuzensApp() {
                 />
               </label>
             </div>
+            <label className="settings-field server-description-field">
+              <span>Topluluk açıklaması</span>
+              <textarea
+                maxLength={240}
+                rows={3}
+                value={serverSettingsDescription}
+                onChange={(event) => setServerSettingsDescription(event.target.value)}
+                placeholder="Bu topluluk ne için var? Yeni gelenler ne bilmeli?"
+              />
+              <small>{serverSettingsDescription.length}/240</small>
+            </label>
+            <div className="server-overview-grid">
+              <label className="settings-field">
+                <span>Varsayılan bildirim</span>
+                <select
+                  value={serverDefaultNotifications}
+                  onChange={(event) =>
+                    setServerDefaultNotifications(event.target.value as "all" | "mentions")
+                  }
+                >
+                  <option value="mentions">Yalnızca bahsetmeler</option>
+                  <option value="all">Tüm mesajlar</option>
+                </select>
+              </label>
+              <label className="settings-field">
+                <span>Sistem mesajları odası</span>
+                <select
+                  value={serverSystemChannelId}
+                  onChange={(event) => setServerSystemChannelId(event.target.value)}
+                >
+                  <option value="">Kapalı</option>
+                  {textChannels.map((channel) => (
+                    <option key={channel.id} value={channel.id}># {channel.name}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="settings-field">
+                <span>Topluluk dili</span>
+                <select
+                  value={serverPreferredLocale}
+                  onChange={(event) => setServerPreferredLocale(event.target.value)}
+                >
+                  <option value="tr">Türkçe</option>
+                  <option value="en">English</option>
+                </select>
+              </label>
+              <label className="settings-toggle">
+                <input
+                  type="checkbox"
+                  checked={serverExplicitFilter}
+                  onChange={(event) => setServerExplicitFilter(event.target.checked)}
+                />
+                <span>
+                  <strong>Güvenli içerik filtresi</strong>
+                  <small>Şüpheli ve uygunsuz içerikleri topluluk genelinde süz.</small>
+                </span>
+              </label>
+            </div>
             <div className="server-health">
               <article><span>ÜYELER</span><strong>{members.length}</strong><small>{onlineMembers.length} çevrimiçi</small></article>
               <article><span>ODALAR</span><strong>{channels.length}</strong><small>{textChannels.length} metin · {voiceChannels.length} ses</small></article>
@@ -5067,7 +5380,7 @@ export function KuzensApp() {
                       <strong>{selectedRole?.name || "Rol seç"}</strong>
                       <span>{selectedRole?.id.endsWith(":owner") ? "Kurucu izinleri güvenlik için kilitlidir." : "Bu role verilen izinler"}</span>
                     </div>
-                    <b>{selectedRole ? permissionOptions.filter((item) => (selectedRole.permissions & item.bit) !== 0).length : 0}/8 açık</b>
+                    <b>{selectedRole ? permissionOptions.filter((item) => (selectedRole.permissions & item.bit) !== 0).length : 0}/{permissionOptions.length} açık</b>
                   </div>
                   {selectedRole && !selectedRole.id.endsWith(":owner") && rolesCanManage && (
                     <div className="role-identity-fields">
@@ -5132,27 +5445,42 @@ export function KuzensApp() {
 
                 <div className="member-role-panel">
                   <div className="permission-heading">
-                    <div><strong>Üye rolleri</strong><span>Her üyenin temel rolünü seç.</span></div>
+                    <div>
+                      <strong>Bu role sahip üyeler</strong>
+                      <span>Bir üyeye birden fazla rol verebilirsin. Kuzen rolü herkeste temel olarak bulunur.</span>
+                    </div>
                   </div>
                   <div className="member-role-grid">
                     {members.map((member) => (
                       <label key={member.id}>
-                        <span><Avatar name={member.name} tone={toneFor(member.id)} size="sm" /><b>{member.name}</b></span>
-                        <select
-                          value={roleAssignments.find((item) => item.memberTag === member.tag)?.roleId || defaultMemberRoleId}
-                          disabled={member.role?.id.endsWith(":owner")}
-                          onChange={(event) => updateMemberRole(member.tag, event.target.value)}
-                        >
-                          {roleItems
-                            .filter(
-                              (role) =>
-                                !role.id.endsWith(":owner") ||
-                                member.role?.id.endsWith(":owner"),
-                            )
-                            .map((role) => (
-                            <option key={role.id} value={role.id}>{role.name}</option>
-                            ))}
-                        </select>
+                        <span>
+                          <Avatar name={member.name} tone={toneFor(member.id)} size="sm" />
+                          <b>{member.name}</b>
+                          <small>{member.roles?.map((role) => role.name).join(" · ") || "Kuzen"}</small>
+                        </span>
+                        <input
+                          type="checkbox"
+                          checked={Boolean(
+                            selectedRole &&
+                              (selectedRole.id.endsWith(":member") ||
+                                roleAssignments.some(
+                                  (item) =>
+                                    item.memberTag === member.tag &&
+                                    item.roleId === selectedRole.id,
+                                )),
+                          )}
+                          disabled={
+                            !selectedRole ||
+                            selectedRole.id.endsWith(":owner") ||
+                            selectedRole.id.endsWith(":member") ||
+                            member.role?.id.endsWith(":owner")
+                          }
+                          onChange={() =>
+                            selectedRole &&
+                            toggleMemberRole(member.tag, selectedRole.id)
+                          }
+                        />
+                        <i />
                       </label>
                     ))}
                   </div>
@@ -5217,6 +5545,131 @@ export function KuzensApp() {
                 </select>
               </label>
             )}
+            {selected.kind === "voice" && (
+              <div className="voice-channel-settings">
+                <label className="settings-field">
+                  <span>Ses kalitesi</span>
+                  <select
+                    value={channelBitrate}
+                    onChange={(event) => setChannelBitrate(Number(event.target.value))}
+                  >
+                    <option value={32_000}>32 kbps · Ekonomik</option>
+                    <option value={64_000}>64 kbps · Dengeli</option>
+                    {voiceBitrateLimit >= 96_000 && <option value={96_000}>96 kbps · Yüksek</option>}
+                    {voiceBitrateLimit >= 128_000 && <option value={128_000}>128 kbps · Stüdyo</option>}
+                    {voiceBitrateLimit >= 192_000 && <option value={192_000}>192 kbps · Aura Net</option>}
+                    {voiceBitrateLimit >= 256_000 && <option value={256_000}>256 kbps · Aura HD</option>}
+                    {voiceBitrateLimit >= 384_000 && <option value={384_000}>384 kbps · Sahip laboratuvarı</option>}
+                  </select>
+                  <small>
+                    {profile?.isOwner
+                      ? "Sahip hesabı test sınırı: 384 kbps"
+                      : serverAuraMembership?.active
+                      ? `Aura Topluluk ${serverAuraMembership.tier} sınırı: ${voiceBitrateLimit / 1000} kbps`
+                      : "Temel topluluk sınırı: 64 kbps"}
+                  </small>
+                </label>
+                <label className="settings-field">
+                  <span>Kullanıcı sınırı</span>
+                  <input
+                    type="number"
+                    min={0}
+                    max={99}
+                    value={channelUserLimit}
+                    onChange={(event) => setChannelUserLimit(Number(event.target.value))}
+                  />
+                  <small>0 seçersen sınır uygulanmaz.</small>
+                </label>
+                <label className="settings-field">
+                  <span>Ses bölgesi</span>
+                  <select
+                    value={channelRegion}
+                    onChange={(event) => setChannelRegion(event.target.value)}
+                  >
+                    <option value="auto">Otomatik</option>
+                    <option value="eu-central">Avrupa Merkez</option>
+                    <option value="eu-west">Avrupa Batı</option>
+                    <option value="me">Orta Doğu</option>
+                  </select>
+                </label>
+              </div>
+            )}
+
+            <section className="channel-permission-editor">
+              <div>
+                <strong>Rol bazlı oda izinleri</strong>
+                <small>Boş bırakılan izin rolün sunucu ayarından miras alınır.</small>
+              </div>
+              {channelPermissionsLoading ? (
+                <div className="roles-loading">Oda izinleri yükleniyor…</div>
+              ) : (
+                <div className="channel-overwrite-list">
+                  {channelPermissionRoles
+                    .filter((role) => !role.id.endsWith(":owner"))
+                    .map((role) => {
+                      const overwrite = channelPermissionOverwrites.find(
+                        (item) => item.roleId === role.id,
+                      );
+                      return (
+                        <article key={role.id}>
+                          <header>
+                            <i style={{ background: role.color }} />
+                            <strong>{role.name}</strong>
+                          </header>
+                          <div>
+                            {channelPermissionOptions
+                              .filter((permission) =>
+                                (permission.kinds as readonly string[]).includes(
+                                  selected.kind,
+                                ),
+                              )
+                              .map((permission) => {
+                                const state =
+                                  overwrite &&
+                                  (overwrite.allowPermissions & permission.bit) !== 0
+                                    ? "allow"
+                                    : overwrite &&
+                                        (overwrite.denyPermissions & permission.bit) !== 0
+                                      ? "deny"
+                                      : "inherit";
+                                return (
+                                  <label key={permission.bit}>
+                                    <span>{permission.label}</span>
+                                    <span className="tri-state">
+                                      {(["deny", "inherit", "allow"] as const).map(
+                                        (value) => (
+                                          <button
+                                            type="button"
+                                            key={value}
+                                            className={state === value ? `active ${value}` : ""}
+                                            onClick={() =>
+                                              setChannelRolePermission(
+                                                role.id,
+                                                permission.bit,
+                                                value,
+                                              )
+                                            }
+                                            aria-label={`${role.name} · ${permission.label} · ${value}`}
+                                          >
+                                            {value === "deny"
+                                              ? "×"
+                                              : value === "allow"
+                                                ? "✓"
+                                                : "—"}
+                                          </button>
+                                        ),
+                                      )}
+                                    </span>
+                                  </label>
+                                );
+                              })}
+                          </div>
+                        </article>
+                      );
+                    })}
+                </div>
+              )}
+            </section>
             <div className="modal-actions">
               <button type="button" onClick={() => setModal(null)}>Vazgeç</button>
               <button className="primary-button">Değişiklikleri kaydet</button>
@@ -5320,6 +5773,24 @@ export function KuzensApp() {
                     {auraPerks.map((perk) => <li key={perk}><i>✓</i>{perk}</li>)}
                   </ul>
                 </section>
+                <section className={`server-aura-card ${serverAuraMembership?.active ? "active" : ""}`}>
+                  <div className="server-aura-card-head">
+                    <span className="server-aura-mark">{activeServer.icon}</span>
+                    <div>
+                      <small>AURA TOPLULUK</small>
+                      <strong>{activeServer.name}</strong>
+                      <p>
+                        {serverAuraMembership?.active
+                          ? `Seviye ${serverAuraMembership.tier} etkin`
+                          : "Topluluk yükseltmesi etkin değil"}
+                      </p>
+                    </div>
+                    <b>{serverAuraMembership?.active ? "AKTİF" : "TEMEL"}</b>
+                  </div>
+                  <ul>
+                    {serverAuraPerks.map((perk) => <li key={perk}><i>✦</i>{perk}</li>)}
+                  </ul>
+                </section>
                 <form className="aura-redeem" onSubmit={redeemAura}>
                   <div>
                     <strong>Bir Aura kodun mu var?</strong>
@@ -5407,6 +5878,60 @@ export function KuzensApp() {
                     </label>
                     <button disabled={auraBusy || auraGrantUsername.length < 3}>Aura ver</button>
                   </form>
+                  <section className="aura-server-owner">
+                    <div>
+                      <span>Topluluğa Aura ver</span>
+                      <small>{activeServer.name}</small>
+                    </div>
+                    <label>
+                      <span>Seviye</span>
+                      <select
+                        value={auraServerTier}
+                        onChange={(event) =>
+                          setAuraServerTier(Number(event.target.value) as 1 | 2 | 3)
+                        }
+                      >
+                        <option value={1}>Seviye 1</option>
+                        <option value={2}>Seviye 2</option>
+                        <option value={3}>Seviye 3</option>
+                      </select>
+                    </label>
+                    <button type="button" disabled={auraBusy} onClick={() => void grantServerAura()}>
+                      Etkinleştir
+                    </button>
+                    {serverAuraMembership?.active && (
+                      <button
+                        type="button"
+                        className="danger-outline"
+                        disabled={auraBusy}
+                        onClick={() => void revokeServerAura()}
+                      >
+                        Kaldır
+                      </button>
+                    )}
+                  </section>
+                  <div className="aura-owner-list aura-server-list">
+                    <span>AURA TOPLULUKLARI · {auraServers.length}</span>
+                    {auraServers.slice(0, 6).map((server) => (
+                      <article key={server.id}>
+                        <span className="server-aura-list-icon">{server.serverName.slice(0, 2)}</span>
+                        <div>
+                          <strong>{server.serverName}</strong>
+                          <small>Seviye {server.tier} · {server.expiresAt ? new Date(server.expiresAt).toLocaleDateString("tr-TR") : "Süresiz"}</small>
+                        </div>
+                        <button
+                          onClick={() =>
+                            void auraAction(
+                              { action: "revoke-server", serverId: server.serverId },
+                              `${server.serverName} için Aura kaldırıldı.`,
+                            )
+                          }
+                        >
+                          Kaldır
+                        </button>
+                      </article>
+                    ))}
+                  </div>
                   <div className="aura-owner-list">
                     <span>ETKİN ÜYELİKLER · {auraMembers.length}</span>
                     {auraMembers.slice(0, 8).map((member) => (
@@ -5611,6 +6136,128 @@ export function KuzensApp() {
               <button className="primary-button">Ayarları kaydet</button>
             </div>
           </form>
+        </div>
+      )}
+
+      {modal === "account" && profile && (
+        <div className="modal-backdrop" onMouseDown={() => setModal(null)}>
+          <section
+            className="modal-card account-modal"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <button
+              type="button"
+              className="modal-close"
+              onClick={() => setModal(null)}
+              aria-label="Kapat"
+            >
+              ×
+            </button>
+            <aside className="settings-navigation">
+              <div className="settings-account">
+                <Avatar name={profile.displayName} tone="purple" size="lg" online />
+                <div>
+                  <strong>{profile.displayName}</strong>
+                  <span>@{profile.username}</span>
+                  {profile.isOwner && <small>KUZENS KURUCU</small>}
+                </div>
+              </div>
+              <button onClick={openProfileSettings}><span>◉</span>Profil</button>
+              <button onClick={() => void openPreferences()}><span>◐</span>Görünüm ve ses</button>
+              <button onClick={openFriends}><span>♧</span>Arkadaşlar ve gizlilik</button>
+              <button onClick={openAura}><span>✦</span>Kuzens Aura</button>
+              <a href="/hukuk"><span>⌁</span>Gizlilik ve hukuk</a>
+              <a href="/signout-with-chatgpt?return_to=/"><span>↪</span>Oturumu kapat</a>
+            </aside>
+
+            <div className="account-content">
+              <span className="eyebrow">KULLANICI AYARLARI</span>
+              <h2>Hesabım</h2>
+              <p>Profilini, cihaz ayarlarını, gizliliğini ve hesap yaşam döngüsünü tek merkezden yönet.</p>
+
+              <div className="account-summary-card">
+                <div className="account-banner" />
+                <Avatar name={profile.displayName} tone="purple" size="lg" online />
+                <div>
+                  <strong>{profile.displayName}</strong>
+                  <span>@{profile.username}</span>
+                  <small>
+                    {auraMembership?.active
+                      ? "Kuzens Aura etkin"
+                      : "Ücretsiz Kuzens hesabı"}
+                  </small>
+                </div>
+                <button type="button" onClick={openProfileSettings}>
+                  Profili düzenle
+                </button>
+              </div>
+
+              <div className="account-action-grid">
+                <button type="button" onClick={() => void openPreferences()}>
+                  <span>◐</span>
+                  <strong>Görünüm ve ses</strong>
+                  <small>Mikrofon, bas-konuş, yazı ve erişilebilirlik</small>
+                </button>
+                <button type="button" onClick={openAura}>
+                  <span>✦</span>
+                  <strong>Kuzens Aura</strong>
+                  <small>Üyeliğin, kodların ve destekçi ayrıcalıkları</small>
+                </button>
+                <button type="button" onClick={openDirectMessages}>
+                  <span>✉</span>
+                  <strong>Mesaj gizliliği</strong>
+                  <small>Kimlerin sana özel mesaj gönderebileceğini seç</small>
+                </button>
+              </div>
+
+              <form className="account-danger-zone" onSubmit={deleteAccount}>
+                <div>
+                  <span>TEHLİKELİ BÖLGE</span>
+                  <strong>Hesabı kalıcı olarak sil</strong>
+                  <p>
+                    Kişisel verilerin, üyeliklerin ve özel mesajların silinir.
+                    Gönderdiğin topluluk mesajları “Silinen hesap” adıyla kalır.
+                  </p>
+                </div>
+                <label>
+                  <span>Kullanıcı adın</span>
+                  <input
+                    value={accountDeleteUsername}
+                    onChange={(event) =>
+                      setAccountDeleteUsername(
+                        event.target.value
+                          .toLocaleLowerCase("en-US")
+                          .replace(/^@/, ""),
+                      )
+                    }
+                    placeholder={profile.username}
+                    autoComplete="off"
+                  />
+                </label>
+                <label>
+                  <span>Onay ifadesi</span>
+                  <input
+                    value={accountDeleteConfirmation}
+                    onChange={(event) =>
+                      setAccountDeleteConfirmation(event.target.value)
+                    }
+                    placeholder="HESABIMI SİL"
+                    autoComplete="off"
+                  />
+                </label>
+                <button
+                  className="danger-button"
+                  disabled={
+                    accountDeleting ||
+                    accountDeleteUsername !== profile.username ||
+                    accountDeleteConfirmation !== "HESABIMI SİL"
+                  }
+                >
+                  {accountDeleting ? "Hesap siliniyor…" : "Hesabımı sil"}
+                </button>
+              </form>
+            </div>
+          </section>
         </div>
       )}
 
@@ -6501,7 +7148,7 @@ export function KuzensApp() {
 
       {profile === undefined && (
         <div className="registration-gate loading">
-          <div className="registration-loader"><span>K.</span><p>Hesabın hazırlanıyor…</p></div>
+          <div className="registration-loader"><span>KZ</span><p>Hesabın hazırlanıyor…</p></div>
         </div>
       )}
 
@@ -6509,7 +7156,7 @@ export function KuzensApp() {
         <div className="registration-gate">
           <div className="registration-card">
             <aside className="registration-brand">
-              <span className="registration-logo">K.</span>
+              <span className="registration-logo">KZ</span>
               <div>
                 <span className="eyebrow">KUZENS’E HOŞ GELDİN</span>
                 <h2>Birlikte kalmanın en kolay yolu.</h2>
@@ -6526,6 +7173,13 @@ export function KuzensApp() {
                 <span>ÜCRETSİZ HESAP</span>
                 <h1>Kuzens hesabını oluştur</h1>
                 <p>Şifre istemiyoruz; güvenli giriş mevcut doğrulanmış hesabın üzerinden yapılır.</p>
+              </div>
+              <div className="registration-trust">
+                <span>✓</span>
+                <div>
+                  <strong>Doğrulanmış kimlik oturumu</strong>
+                  <small>Parolan Kuzens sunucularına gönderilmez veya kaydedilmez.</small>
+                </div>
               </div>
               <label>
                 GÖRÜNEN AD

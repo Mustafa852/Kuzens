@@ -120,6 +120,13 @@
       "when": 1784955254441,
       "tag": "0016_perfect_slyde",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "6",
+      "when": 1784981118605,
+      "tag": "0017_public_doomsday",
+      "breakpoints": true
     }
   ]
 }

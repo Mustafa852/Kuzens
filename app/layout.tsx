@@ -23,7 +23,7 @@ export async function generateMetadata(): Promise<Metadata> {
     requestHeaders.get("x-forwarded-proto") ||
     (host.startsWith("localhost") ? "http" : "https");
   const baseUrl = new URL(`${protocol}://${host}`);
-  const socialImage = new URL("/og-aura.png", baseUrl).toString();
+  const socialImage = new URL("/og-aura-v2.png", baseUrl).toString();
 
   return {
     metadataBase: baseUrl,
@@ -50,7 +50,7 @@ export async function generateMetadata(): Promise<Metadata> {
       description:
         "Arkadaşlarınla kendi alanında konuş, paylaş ve birlikte takıl.",
       type: "website",
-      images: [{ url: socialImage, width: 1734, height: 907, alt: "Kuzens — birlikte kal." }],
+      images: [{ url: socialImage, width: 1672, height: 941, alt: "Kuzens topluluk ağı" }],
     },
     twitter: {
       card: "summary_large_image",
