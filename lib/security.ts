@@ -145,6 +145,7 @@ export function apiJson(data: unknown, init: ResponseInit = {}) {
   const headers = new Headers(init.headers);
   headers.set("cache-control", "no-store");
   headers.set("content-type", "application/json; charset=utf-8");
+  headers.set("vary", "Sec-Fetch-Site, Origin");
   headers.set("x-content-type-options", "nosniff");
   return Response.json(data, { ...init, headers });
 }

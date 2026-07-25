@@ -112,6 +112,7 @@ test("enforces server-side request and abuse protections", () => {
   assert.match(securitySource, /x-kuzens-request/);
   assert.match(securitySource, /application\/json/);
   assert.match(securitySource, /enforceRateLimit/);
+  assert.match(securitySource, /Sec-Fetch-Site, Origin/);
   assert.match(messagesRoute, /assertTrustedMutation\(request\)/);
   assert.match(messagesRoute, /enforceRateLimit/);
   for (const route of [

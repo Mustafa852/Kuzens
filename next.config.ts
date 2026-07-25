@@ -5,9 +5,10 @@ const nextConfig: NextConfig = {
   async headers() {
     const contentSecurityPolicy = [
       "default-src 'self'",
-      "base-uri 'self'",
+      "base-uri 'none'",
       "object-src 'none'",
       "frame-ancestors 'none'",
+      "frame-src 'none'",
       "form-action 'self'",
       "script-src 'self' 'unsafe-inline'",
       "style-src 'self' 'unsafe-inline'",
@@ -16,6 +17,7 @@ const nextConfig: NextConfig = {
       "connect-src 'self'",
       "media-src 'self' blob:",
       "worker-src 'self' blob:",
+      "manifest-src 'self'",
       "upgrade-insecure-requests",
     ].join("; ");
     return [
