@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import test from "node:test";
 
 const [
@@ -71,6 +71,16 @@ const [
     readFile(new URL("../app/api/server-guide/route.ts", import.meta.url), "utf8"),
   ]);
 
+const apiRoot = new URL("../app/api/", import.meta.url);
+const mutationRouteSources = await Promise.all(
+  (await readdir(apiRoot, { recursive: true }))
+    .filter((entry) => entry.endsWith("route.ts"))
+    .map(async (entry) => ({
+      entry,
+      source: await readFile(new URL(entry.replaceAll("\\", "/"), apiRoot), "utf8"),
+    })),
+);
+
 test("keeps the application fixed to the viewport", () => {
   assert.match(
     appStyles,
@@ -139,6 +149,25 @@ test("enforces server-side request and abuse protections", () => {
   }
   assert.match(nextConfig, /Content-Security-Policy/);
   assert.match(nextConfig, /frame-ancestors 'none'/);
+});
+
+test("keeps every state-changing API behind shared request and abuse guards", () => {
+  const stateChanging = mutationRouteSources.filter(({ source }) =>
+    /export async function (POST|PATCH|PUT|DELETE)/.test(source),
+  );
+  assert.ok(stateChanging.length >= 20);
+  for (const { entry, source } of stateChanging) {
+    assert.match(
+      source,
+      /assertTrustedMutation\(request\)/,
+      `${entry} must reject forged cross-site mutations`,
+    );
+    assert.match(
+      source,
+      /enforceRateLimit\(/,
+      `${entry} must limit automated abuse`,
+    );
+  }
 });
 
 test("keeps user content inert and realtime signals targeted", () => {
