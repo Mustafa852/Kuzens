@@ -343,7 +343,7 @@ export function KuzensApp() {
   }
 
   async function copyInvite() {
-    const invite = `${window.location.origin}/davet/kuzens-7F2K`;
+    const invite = `${window.location.origin}/?davet=kuzens-7F2K`;
     try {
       await navigator.clipboard.writeText(invite);
       setToast({ text: "Davet bağlantısı kopyalandı.", tone: "success" });
