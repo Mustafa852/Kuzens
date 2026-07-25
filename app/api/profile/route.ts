@@ -1,81 +1,120 @@
-import { count, eq } from "drizzle-orm";
-import { getDb } from "@/db";
-import { memberRoles, profiles, roles } from "@/db/schema";
-import { getRequestIdentity } from "@/lib/identity";
+import { count, eq, sql } from "drizzle-orm";
+import { invites, memberRoles, profiles, servers } from "@/db/schema";
+import {
+  DEFAULT_SERVER_ID,
+  ensureCommunity,
+  ensureMembership,
+  findProfile,
+} from "@/lib/community";
+import {
+  apiError,
+  apiJson,
+  assertTrustedMutation,
+  cleanText,
+  enforceRateLimit,
+  readJson,
+  requireIdentity,
+} from "@/lib/security";
 
 const LEGAL_VERSION = "2026-07-25.v1";
 
+type RegistrationPayload = {
+  displayName?: string;
+  username?: string;
+  inviteCode?: string | null;
+  birthConfirmed?: boolean;
+  termsAccepted?: boolean;
+  noticeRead?: boolean;
+  communityAccepted?: boolean;
+};
+
 export async function GET(request: Request) {
   try {
-    const identity = getRequestIdentity(request);
-    const db = getDb();
-    const [profile] = await db
-      .select()
-      .from(profiles)
-      .where(eq(profiles.email, identity.email))
-      .limit(1);
-
-    return Response.json({
+    const identity = requireIdentity(request);
+    const profile = await findProfile(identity);
+    if (profile?.isOwner) {
+      const { getDb } = await import("@/db");
+      await getDb()
+        .update(servers)
+        .set({ ownerProfileId: profile.id })
+        .where(eq(servers.id, DEFAULT_SERVER_ID));
+    }
+    return apiJson({
       profile: profile ?? null,
       identity: {
         displayName: identity.displayName,
-        suggestedUsername: identity.email.split("@")[0].replace(/[^a-z0-9_]/g, "").slice(0, 24),
+        suggestedUsername: identity.email
+          .split("@")[0]
+          .replace(/[^a-z0-9_]/g, "")
+          .slice(0, 24),
       },
       legalVersion: LEGAL_VERSION,
     });
-  } catch {
-    return Response.json({
-      profile: null,
-      identity: { displayName: "Savaş", suggestedUsername: "savas" },
-      legalVersion: LEGAL_VERSION,
-      mode: "demo",
-    });
+  } catch (error) {
+    return apiError(error);
   }
 }
 
 export async function POST(request: Request) {
   try {
-    const payload = (await request.json()) as {
-      displayName?: string;
-      username?: string;
-      birthConfirmed?: boolean;
-      termsAccepted?: boolean;
-      noticeRead?: boolean;
-      communityAccepted?: boolean;
-    };
-    const displayName = payload.displayName?.trim() || "";
-    const username = payload.username?.trim().toLocaleLowerCase("en-US") || "";
+    assertTrustedMutation(request);
+    const identity = requireIdentity(request);
+    await enforceRateLimit(request, "profile-create", identity.email, 5, 15 * 60_000);
+    const payload = await readJson<RegistrationPayload>(request, 8_192);
+    const displayName = cleanText(payload.displayName, { min: 2, max: 32 });
+    const username =
+      typeof payload.username === "string"
+        ? payload.username.trim().toLocaleLowerCase("en-US")
+        : "";
 
-    if (displayName.length < 2 || displayName.length > 32) {
-      return Response.json({ error: "Görünen ad 2–32 karakter olmalı." }, { status: 400 });
-    }
     if (!/^[a-z0-9_]{3,24}$/.test(username)) {
-      return Response.json(
+      return apiJson(
         { error: "Kullanıcı adı 3–24 karakter olmalı; yalnızca küçük harf, rakam ve _ kullanılabilir." },
         { status: 400 },
       );
     }
-    if (!payload.birthConfirmed || !payload.termsAccepted || !payload.noticeRead || !payload.communityAccepted) {
-      return Response.json({ error: "Zorunlu kayıt onayları tamamlanmalı." }, { status: 400 });
+    if (
+      payload.birthConfirmed !== true ||
+      payload.termsAccepted !== true ||
+      payload.noticeRead !== true ||
+      payload.communityAccepted !== true
+    ) {
+      return apiJson({ error: "Zorunlu kayıt onayları tamamlanmalı." }, { status: 400 });
     }
 
-    const identity = getRequestIdentity(request);
-    const db = getDb();
-    const [existing] = await db
-      .select()
-      .from(profiles)
-      .where(eq(profiles.email, identity.email))
-      .limit(1);
-    if (existing) return Response.json({ profile: existing });
+    const db = await ensureCommunity();
+    const existing = await findProfile(identity);
+    if (existing) return apiJson({ profile: existing });
 
     const [{ value: profileCount }] = await db.select({ value: count() }).from(profiles);
+    const isOwner = profileCount === 0;
+    let invite: typeof invites.$inferSelect | undefined;
+    if (!isOwner) {
+      const inviteCode =
+        typeof payload.inviteCode === "string"
+          ? payload.inviteCode.trim().toLocaleUpperCase("en-US")
+          : "";
+      if (!/^[A-Z2-9]{10}$/.test(inviteCode)) {
+        return apiJson({ error: "Geçerli bir Kuzens daveti gerekiyor." }, { status: 403 });
+      }
+      [invite] = await db.select().from(invites).where(eq(invites.code, inviteCode)).limit(1);
+      if (
+        !invite ||
+        invite.revokedAt ||
+        invite.uses >= invite.maxUses ||
+        new Date(invite.expiresAt).getTime() <= Date.now()
+      ) {
+        return apiJson({ error: "Davet geçersiz, süresi dolmuş veya kullanım sınırına ulaşmış." }, { status: 403 });
+      }
+    }
+
     const now = new Date().toISOString();
     const profile = {
       id: crypto.randomUUID(),
       email: identity.email,
       displayName,
       username,
-      isOwner: profileCount === 0,
+      isOwner,
       birthConfirmed: true,
       termsVersion: LEGAL_VERSION,
       noticeVersion: LEGAL_VERSION,
@@ -84,34 +123,37 @@ export async function POST(request: Request) {
       createdAt: now,
     };
     await db.insert(profiles).values(profile);
-
-    if (profile.isOwner) {
-      const ownerRole = {
-        id: "kuzens:owner",
-        serverId: "kuzens",
-        name: "Kurucu",
-        color: "#ffd166",
-        permissions: 255,
-        position: 0,
-        createdAt: now,
-      };
-      await db.insert(roles).values(ownerRole).onConflictDoNothing();
-      await db.insert(memberRoles).values({
-        id: `kuzens:@${username}`,
-        serverId: "kuzens",
-        memberTag: `@${username}`,
-        roleId: ownerRole.id,
-        createdAt: now,
-      }).onConflictDoNothing();
+    const targetServerId = invite?.serverId || DEFAULT_SERVER_ID;
+    if (isOwner) {
+      await db
+        .update(servers)
+        .set({ ownerProfileId: profile.id })
+        .where(eq(servers.id, DEFAULT_SERVER_ID));
     }
-
-    return Response.json({ profile }, { status: 201 });
+    await ensureMembership(profile.id, targetServerId);
+    await db
+      .insert(memberRoles)
+      .values({
+        id: `${targetServerId}:@${username}`,
+        serverId: targetServerId,
+        memberTag: `@${username}`,
+        roleId: `${targetServerId}:${isOwner ? "owner" : "member"}`,
+        createdAt: now,
+      })
+      .onConflictDoNothing();
+    if (invite) {
+      await db
+        .update(invites)
+        .set({ uses: sql`${invites.uses} + 1` })
+        .where(eq(invites.id, invite.id));
+    }
+    return apiJson({ profile }, { status: 201 });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Kayıt oluşturulamadı.";
-    const isDuplicate = /unique|constraint/i.test(message);
-    return Response.json(
-      { error: isDuplicate ? "Bu kullanıcı adı zaten kullanılıyor." : message },
-      { status: isDuplicate ? 409 : 500 },
-    );
+    const duplicate =
+      error instanceof Error && /unique|constraint/i.test(error.message);
+    if (duplicate) {
+      return apiJson({ error: "Bu kullanıcı adı zaten kullanılıyor." }, { status: 409 });
+    }
+    return apiError(error);
   }
 }

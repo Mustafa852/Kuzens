@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { requireChatGPTUser } from "./chatgpt-auth";
 import { KuzensApp } from "./KuzensApp";
 
 export const metadata: Metadata = {
@@ -7,6 +8,9 @@ export const metadata: Metadata = {
     "Topluluğun için mesajlaşma, sesli odalar ve ekran paylaşımı.",
 };
 
-export default function Home() {
+export const dynamic = "force-dynamic";
+
+export default async function Home() {
+  await requireChatGPTUser("/");
   return <KuzensApp />;
 }

@@ -15,7 +15,11 @@ export function PrivacyRequestForm() {
     try {
       const response = await fetch("/api/privacy-requests", {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        credentials: "same-origin",
+        headers: {
+          "content-type": "application/json",
+          "x-kuzens-request": "1",
+        },
         body: JSON.stringify({
           applicantName: form.get("applicantName"),
           email: form.get("email"),

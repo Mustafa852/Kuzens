@@ -15,6 +15,34 @@
       "when": 1784944196655,
       "tag": "0001_lying_psynapse",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1784946420831,
+      "tag": "0002_tired_alice",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1784947046295,
+      "tag": "0003_typical_zarda",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1784947167050,
+      "tag": "0004_damp_monster_badoon",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1784947568288,
+      "tag": "0005_true_annihilus",
+      "breakpoints": true
     }
   ]
 }

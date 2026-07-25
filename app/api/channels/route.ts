@@ -1,48 +1,78 @@
-import { asc, eq } from "drizzle-orm";
-import { getDb } from "@/db";
-import { channels } from "@/db/schema";
+import { and, asc, eq } from "drizzle-orm";
+import { channels, messages, rtcSignals } from "@/db/schema";
+import {
+  DEFAULT_SERVER_ID,
+  PERMISSIONS,
+  requireMember,
+  requirePermission,
+  writeAudit,
+} from "@/lib/community";
+import {
+  apiError,
+  apiJson,
+  assertTrustedMutation,
+  cleanText,
+  enforceRateLimit,
+  readJson,
+  requireIdentity,
+} from "@/lib/security";
 
-const defaultChannels = [
-  { id: "genel", serverId: "kuzens", name: "genel", kind: "text" as const, position: 0 },
-  { id: "oyun-gecesi", serverId: "kuzens", name: "oyun-gecesi", kind: "text" as const, position: 1 },
-  { id: "paylasimlar", serverId: "kuzens", name: "paylaşımlar", kind: "text" as const, position: 2 },
-  { id: "muhabbet", serverId: "kuzens", name: "Muhabbet", kind: "voice" as const, position: 3 },
-  { id: "gece-ekibi", serverId: "kuzens", name: "Gece Ekibi", kind: "voice" as const, position: 4 },
-];
+type ChannelPayload = {
+  id?: string;
+  name?: string;
+  kind?: "text" | "voice";
+  serverId?: string;
+};
 
-function errorMessage(error: unknown) {
-  return error instanceof Error ? error.message : "Beklenmeyen bir hata oluştu.";
+function channelName(value: unknown) {
+  return cleanText(value, { max: 32 })
+    .toLocaleLowerCase("tr-TR")
+    .replace(/\s+/g, "-")
+    .replace(/[^a-z0-9ğüşöçı_-]/g, "");
 }
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
-    const db = getDb();
-    const rows = await db.select().from(channels).orderBy(asc(channels.position));
-    return Response.json({ channels: rows.length ? rows : defaultChannels });
-  } catch {
-    return Response.json({ channels: defaultChannels, mode: "demo" });
+    const identity = requireIdentity(request);
+    const serverId = cleanText(
+      new URL(request.url).searchParams.get("server") || DEFAULT_SERVER_ID,
+      { max: 80 },
+    );
+    const { db } = await requireMember(identity, serverId);
+    const rows = await db
+      .select()
+      .from(channels)
+      .where(eq(channels.serverId, serverId))
+      .orderBy(asc(channels.position));
+    return apiJson({ channels: rows });
+  } catch (error) {
+    return apiError(error);
   }
 }
 
 export async function POST(request: Request) {
   try {
-    const payload = (await request.json()) as {
-      name?: string;
-      kind?: "text" | "voice";
-      serverId?: string;
-    };
-    const name = payload.name?.trim().toLocaleLowerCase("tr-TR").replace(/\s+/g, "-") ?? "";
-    const kind = payload.kind === "voice" ? "voice" : "text";
-    const serverId = payload.serverId?.trim() || "kuzens";
+    assertTrustedMutation(request);
+    const identity = requireIdentity(request);
+    const payload = await readJson<ChannelPayload>(request, 4_096);
+    const serverId = cleanText(payload.serverId || DEFAULT_SERVER_ID, { max: 80 });
+    const { db, profile } = await requireMember(identity, serverId);
+    await requirePermission(profile, PERMISSIONS.manageChannels, serverId);
+    await enforceRateLimit(request, "channel-create", identity.email, 10, 60 * 60_000);
+    const name = channelName(payload.name);
+    const kind: "text" | "voice" = payload.kind === "voice" ? "voice" : "text";
 
-    if (!name || name.length > 32) {
-      return Response.json({ error: "Oda adı 1–32 karakter olmalı." }, { status: 400 });
+    if (!name) return apiJson({ error: "Geçerli bir oda adı gir." }, { status: 400 });
+    const existing = await db
+      .select()
+      .from(channels)
+      .where(eq(channels.serverId, serverId));
+    if (existing.some((channel) => channel.name.toLocaleLowerCase("tr-TR") === name)) {
+      return apiJson({ error: "Bu isimde bir oda zaten var." }, { status: 409 });
     }
 
-    const db = getDb();
-    const existing = await db.select().from(channels).where(eq(channels.serverId, serverId));
     const channel = {
-      id: `${name}-${crypto.randomUUID().slice(0, 6)}`,
+      id: `${name}-${crypto.randomUUID().slice(0, 8)}`,
       serverId,
       name,
       kind,
@@ -50,8 +80,64 @@ export async function POST(request: Request) {
       createdAt: new Date().toISOString(),
     };
     await db.insert(channels).values(channel);
-    return Response.json({ channel }, { status: 201 });
+    await writeAudit(profile.id, "channel.create", channel.id, `${kind}:${name}`, serverId);
+    return apiJson({ channel }, { status: 201 });
   } catch (error) {
-    return Response.json({ error: errorMessage(error) }, { status: 500 });
+    return apiError(error);
+  }
+}
+
+export async function PATCH(request: Request) {
+  try {
+    assertTrustedMutation(request);
+    const identity = requireIdentity(request);
+    const payload = await readJson<ChannelPayload>(request, 4_096);
+    const serverId = cleanText(payload.serverId || DEFAULT_SERVER_ID, { max: 80 });
+    const { db, profile } = await requireMember(identity, serverId);
+    await requirePermission(profile, PERMISSIONS.manageChannels, serverId);
+    await enforceRateLimit(request, "channel-update", identity.email, 20, 60 * 60_000);
+    const id = cleanText(payload.id, { max: 80 });
+    const name = channelName(payload.name);
+    const [existing] = await db
+      .select()
+      .from(channels)
+      .where(and(eq(channels.id, id), eq(channels.serverId, serverId)))
+      .limit(1);
+    if (!existing) return apiJson({ error: "Oda bulunamadı." }, { status: 404 });
+
+    await db.update(channels).set({ name }).where(eq(channels.id, id));
+    await writeAudit(profile.id, "channel.rename", id, name, serverId);
+    return apiJson({ channel: { ...existing, name } });
+  } catch (error) {
+    return apiError(error);
+  }
+}
+
+export async function DELETE(request: Request) {
+  try {
+    assertTrustedMutation(request);
+    const identity = requireIdentity(request);
+    const payload = await readJson<ChannelPayload>(request, 2_048);
+    const serverId = cleanText(payload.serverId || DEFAULT_SERVER_ID, { max: 80 });
+    const { db, profile } = await requireMember(identity, serverId);
+    await requirePermission(profile, PERMISSIONS.manageChannels, serverId);
+    await enforceRateLimit(request, "channel-delete", identity.email, 10, 60 * 60_000);
+    const id = cleanText(payload.id, { max: 80 });
+    if (id === "genel" || id === `${serverId}:genel`) {
+      return apiJson({ error: "#genel odası güvenlik için silinemez." }, { status: 400 });
+    }
+    const [existing] = await db
+      .select()
+      .from(channels)
+      .where(and(eq(channels.id, id), eq(channels.serverId, serverId)))
+      .limit(1);
+    if (!existing) return apiJson({ error: "Oda bulunamadı." }, { status: 404 });
+    await db.delete(messages).where(eq(messages.channelId, id));
+    await db.delete(rtcSignals).where(eq(rtcSignals.channelId, id));
+    await db.delete(channels).where(eq(channels.id, id));
+    await writeAudit(profile.id, "channel.delete", id, existing.name, serverId);
+    return apiJson({ ok: true });
+  } catch (error) {
+    return apiError(error);
   }
 }

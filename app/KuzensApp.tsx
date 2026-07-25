@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import "./kuzens.css";
 
 type Channel = {
@@ -14,9 +14,13 @@ type Channel = {
 type ChatMessage = {
   id: string;
   channelId: string;
+  authorProfileId?: string | null;
   authorName: string;
   authorTag: string;
   content: string;
+  replyToId?: string | null;
+  editedAt?: string | null;
+  deletedAt?: string | null;
   createdAt: string;
 };
 
@@ -45,6 +49,48 @@ type RoleAssignment = {
   roleId: string;
 };
 
+type Member = {
+  id: string;
+  name: string;
+  tag: string;
+  online: boolean;
+  lastSeenAt: string | null;
+  voiceChannelId: string | null;
+  sharing: boolean;
+  role: { id: string; name: string; color: string } | null;
+};
+
+type BannedMember = {
+  id: string;
+  name: string;
+  tag: string;
+  reason: string;
+  createdAt: string;
+};
+
+type RtcSignal = {
+  id: string;
+  senderProfileId: string;
+  recipientProfileId: string;
+  type: "offer" | "answer" | "ice";
+  payload: string;
+  createdAt: string;
+};
+
+type CommunityServer = {
+  id: string;
+  name: string;
+  icon: string;
+  ownerProfileId?: string | null;
+};
+
+type FriendItem = {
+  id: string;
+  status: "pending" | "accepted" | "blocked";
+  direction: "incoming" | "outgoing";
+  profile: { id: string; name: string; tag: string };
+};
+
 const permissionOptions = [
   { bit: 1, label: "Sunucuyu yönet", detail: "Sunucu adı ve genel ayarları" },
   { bit: 2, label: "Odaları yönet", detail: "Oda oluşturma, düzenleme ve silme" },
@@ -64,48 +110,33 @@ const fallbackChannels: Channel[] = [
   { id: "gece-ekibi", serverId: "kuzens", name: "Gece Ekibi", kind: "voice", position: 4 },
 ];
 
-const seedMessages: ChatMessage[] = [
-  {
-    id: "seed-1",
-    channelId: "genel",
-    authorName: "Ece",
-    authorTag: "@ecenur",
-    content: "Akşam oyun gecesi var mı? Yeni oda baya iyi olmuş ✨",
-    createdAt: "2026-07-25T18:42:00.000Z",
-  },
-  {
-    id: "seed-2",
-    channelId: "genel",
-    authorName: "Batu",
-    authorTag: "@batuhan",
-    content: "Ben 21.30 gibi buradayım. Şunu da izleyin: https://youtube.com/watch?v=kuzens",
-    createdAt: "2026-07-25T18:44:00.000Z",
-  },
-  {
-    id: "seed-3",
-    channelId: "genel",
-    authorName: "Deniz",
-    authorTag: "@deniz",
-    content: "Tamamdır, Muhabbet odasına geçeriz. Ekran paylaşımı da deneriz.",
-    createdAt: "2026-07-25T18:47:00.000Z",
-  },
-  {
-    id: "seed-4",
-    channelId: "oyun-gecesi",
-    authorName: "Mert",
-    authorTag: "@mert",
-    content: "Bu akşam co-op listesi: Deep Rock, Lethal Company, Valheim.",
-    createdAt: "2026-07-25T17:22:00.000Z",
-  },
-];
+const memberTones = ["purple", "pink", "blue", "orange", "green"];
 
-const members = [
-  { name: "Ece", tag: "@ecenur", status: "Valorant oynuyor", tone: "pink", online: true },
-  { name: "Batu", tag: "@batuhan", status: "Muhabbet odasında", tone: "blue", online: true },
-  { name: "Deniz", tag: "@deniz", status: "YouTube izliyor", tone: "orange", online: true },
-  { name: "Mert", tag: "@mert", status: "15 dk önce", tone: "green", online: false },
-  { name: "Selin", tag: "@selin", status: "2 saat önce", tone: "purple", online: false },
-];
+function toneFor(value: string) {
+  let hash = 0;
+  for (const character of value) hash = (hash * 31 + character.charCodeAt(0)) >>> 0;
+  return memberTones[hash % memberTones.length];
+}
+
+function apiFetch(input: RequestInfo | URL, init: RequestInit = {}) {
+  const headers = new Headers(init.headers);
+  const method = (init.method || "GET").toUpperCase();
+  if (!["GET", "HEAD", "OPTIONS"].includes(method)) {
+    headers.set("x-kuzens-request", "1");
+  }
+  return fetch(input, { ...init, headers, credentials: "same-origin" });
+}
+
+async function responseError(response: Response, fallback: string) {
+  const data = (await response.json().catch(() => ({}))) as { error?: string };
+  return data.error || fallback;
+}
+
+function mergeMessages(current: ChatMessage[], incoming: ChatMessage[]) {
+  const merged = new Map(current.map((message) => [message.id, message]));
+  for (const message of incoming) merged.set(message.id, message);
+  return Array.from(merged.values()).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
 
 function initials(name: string) {
   return name
@@ -123,14 +154,49 @@ function timeLabel(value: string) {
   }).format(new Date(value));
 }
 
+function memberStatus(member: Member) {
+  if (member.voiceChannelId) return member.sharing ? "Ekran paylaşıyor" : "Ses odasında";
+  if (member.online) return member.role?.name || "Çevrimiçi";
+  if (!member.lastSeenAt) return "Çevrimdışı";
+  const minutes = Math.max(
+    1,
+    Math.floor((Date.now() - new Date(member.lastSeenAt).getTime()) / 60_000),
+  );
+  if (minutes < 60) return `${minutes} dk önce`;
+  const hours = Math.floor(minutes / 60);
+  return hours < 24 ? `${hours} sa önce` : `${Math.floor(hours / 24)} gün önce`;
+}
+
 function LinkEmbed({ content }: { content: string }) {
-  const isYouTube = /youtu\.?be|youtube\.com/i.test(content);
-  const isSteam = /store\.steampowered\.com|steamcommunity\.com/i.test(content);
+  const urlText = content.match(/https?:\/\/[^\s<>"']+/i)?.[0];
+  if (!urlText) return null;
+  let url: URL;
+  try {
+    url = new URL(urlText);
+  } catch {
+    return null;
+  }
+  const isYouTube = /(^|\.)youtube\.com$|(^|\.)youtu\.be$/i.test(url.hostname);
+  const isSteam = /(^|\.)steampowered\.com$|(^|\.)steamcommunity\.com$/i.test(url.hostname);
   if (!isYouTube && !isSteam) return null;
+  const youtubeId = isYouTube
+    ? url.hostname.includes("youtu.be")
+      ? url.pathname.split("/")[1]
+      : url.searchParams.get("v") || url.pathname.match(/\/shorts\/([^/]+)/)?.[1]
+    : null;
+  const steamId = isSteam ? url.pathname.match(/\/app\/(\d+)/)?.[1] : null;
+  const imageUrl = youtubeId
+    ? `https://i.ytimg.com/vi/${encodeURIComponent(youtubeId)}/hqdefault.jpg`
+    : steamId
+      ? `https://cdn.akamai.steamstatic.com/steam/apps/${steamId}/header.jpg`
+      : null;
 
   return (
-    <article className="link-embed">
-      <div className={`embed-art ${isYouTube ? "youtube" : "steam"}`}>
+    <a className="link-embed" href={url.toString()} target="_blank" rel="noreferrer noopener">
+      <div
+        className={`embed-art ${isYouTube ? "youtube" : "steam"}`}
+        style={imageUrl ? { backgroundImage: `linear-gradient(145deg, rgba(0,0,0,.12), rgba(0,0,0,.58)), url("${imageUrl}")` } : undefined}
+      >
         <span>{isYouTube ? "▶" : "STEAM"}</span>
         <div className="embed-art-glow" />
       </div>
@@ -139,7 +205,7 @@ function LinkEmbed({ content }: { content: string }) {
         <strong>{isYouTube ? "Oyun Gecesi — takım hazır mı?" : "Haftanın birlikte oynananları"}</strong>
         <p>{isYouTube ? "Kuzens topluluğundan paylaşılan video" : "Topluluğun konuştuğu oyun ve içerikler"}</p>
       </div>
-    </article>
+    </a>
   );
 }
 
@@ -162,18 +228,42 @@ function Avatar({
   );
 }
 
+function RemoteAudio({ stream, muted }: { stream: MediaStream; muted: boolean }) {
+  const element = useRef<HTMLAudioElement | null>(null);
+  useEffect(() => {
+    if (element.current) element.current.srcObject = stream;
+  }, [stream]);
+  return <audio ref={element} autoPlay muted={muted} />;
+}
+
+function RemoteVideo({ stream, label }: { stream: MediaStream; label: string }) {
+  const element = useRef<HTMLVideoElement | null>(null);
+  useEffect(() => {
+    if (element.current) element.current.srcObject = stream;
+  }, [stream]);
+  return <video ref={element} autoPlay muted playsInline aria-label={`${label} ekran paylaşımı`} />;
+}
+
 export function KuzensApp() {
+  const [servers, setServers] = useState<CommunityServer[]>([]);
+  const [activeServerId, setActiveServerId] = useState("kuzens");
+  const [serverRefresh, setServerRefresh] = useState(0);
   const [channels, setChannels] = useState<Channel[]>(fallbackChannels);
   const [activeChannel, setActiveChannel] = useState("genel");
-  const [messages, setMessages] = useState<ChatMessage[]>(seedMessages);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [members, setMembers] = useState<Member[]>([]);
+  const [bannedMembers, setBannedMembers] = useState<BannedMember[]>([]);
+  const [permissions, setPermissions] = useState(0);
   const [draft, setDraft] = useState("");
   const [search, setSearch] = useState("");
+  const [replyingTo, setReplyingTo] = useState<ChatMessage | null>(null);
   const [voiceConnected, setVoiceConnected] = useState(false);
   const [muted, setMuted] = useState(false);
   const [deafened, setDeafened] = useState(false);
   const [sharing, setSharing] = useState(false);
   const [toast, setToast] = useState<Toast | null>(null);
-  const [modal, setModal] = useState<"channel" | "roles" | null>(null);
+  const [modal, setModal] = useState<"channel" | "roles" | "server" | "friends" | null>(null);
+  const [newServerName, setNewServerName] = useState("");
   const [newChannelName, setNewChannelName] = useState("");
   const [newChannelKind, setNewChannelKind] = useState<"text" | "voice">("text");
   const [mobileChannels, setMobileChannels] = useState(false);
@@ -188,16 +278,60 @@ export function KuzensApp() {
   const [selectedRoleId, setSelectedRoleId] = useState("");
   const [rolesLoading, setRolesLoading] = useState(false);
   const [rolesSaving, setRolesSaving] = useState(false);
+  const [rolesCanManage, setRolesCanManage] = useState(false);
+  const [friendItems, setFriendItems] = useState<FriendItem[]>([]);
+  const [friendUsername, setFriendUsername] = useState("");
+  const [friendsLoading, setFriendsLoading] = useState(false);
+  const [remoteStreams, setRemoteStreams] = useState<Record<string, MediaStream>>({});
   const voiceStream = useRef<MediaStream | null>(null);
   const displayStream = useRef<MediaStream | null>(null);
   const previewVideo = useRef<HTMLVideoElement | null>(null);
   const messageList = useRef<HTMLDivElement | null>(null);
+  const messageSyncAt = useRef<Record<string, string>>({});
+  const rtcSyncAt = useRef(new Date(Date.now() - 30_000).toISOString());
+  const rtcChannelId = useRef<string | null>(null);
+  const peerConnections = useRef(new Map<string, RTCPeerConnection>());
+  const pendingIce = useRef(new Map<string, RTCIceCandidateInit[]>());
+  const makingOffers = useRef(new Set<string>());
 
   const selected = channels.find((channel) => channel.id === activeChannel) || channels[0];
+  const activeServer =
+    servers.find((server) => server.id === activeServerId) ||
+    ({ id: "kuzens", name: "Kuzens", icon: "KZ" } satisfies CommunityServer);
   const selectedRole = roleItems.find((role) => role.id === selectedRoleId);
   const defaultMemberRoleId = roleItems.find((role) => role.id.endsWith(":member"))?.id || "";
   const textChannels = channels.filter((channel) => channel.kind === "text");
   const voiceChannels = channels.filter((channel) => channel.kind === "voice");
+  const onlineMembers = members.filter((member) => member.online);
+  const offlineMembers = members.filter((member) => !member.online);
+  const voiceRoomMembers = members.filter(
+    (member) => member.voiceChannelId === selected?.id,
+  );
+  const visibleVoiceMembers =
+    voiceRoomMembers.length || !profile || !voiceConnected
+      ? voiceRoomMembers
+      : [
+          {
+            id: profile.id,
+            name: profile.displayName,
+            tag: `@${profile.username}`,
+            online: true,
+            lastSeenAt: new Date().toISOString(),
+            voiceChannelId: selected?.id || null,
+            sharing,
+            role: null,
+          },
+        ];
+  const remoteSharer = voiceRoomMembers.find(
+    (member) => member.id !== profile?.id && member.sharing && remoteStreams[member.id],
+  );
+  const canManageChannels = (permissions & 2) !== 0;
+  const canKickMembers = (permissions & 16) !== 0;
+  const canBanMembers = (permissions & 32) !== 0;
+  const ownsActiveServer =
+    activeServerId === "kuzens"
+      ? Boolean(profile?.isOwner)
+      : activeServer.ownerProfileId === profile?.id;
 
   const visibleMessages = useMemo(() => {
     const normalized = search.trim().toLocaleLowerCase("tr-TR");
@@ -211,7 +345,7 @@ export function KuzensApp() {
   }, [activeChannel, messages, search]);
 
   useEffect(() => {
-    fetch("/api/profile")
+    apiFetch("/api/profile")
       .then((response) => response.json())
       .then((data: {
         profile?: Profile | null;
@@ -229,36 +363,146 @@ export function KuzensApp() {
   }, []);
 
   useEffect(() => {
-    fetch("/api/channels")
-      .then((response) => response.json())
-      .then((data: { channels?: Channel[] }) => {
-        if (data.channels?.length) setChannels(data.channels);
+    if (!profile) return;
+    const code = new URLSearchParams(window.location.search).get("davet");
+    if (!code) return;
+    apiFetch("/api/invites", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "join", code }),
+    })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(await responseError(response, "Davete katılınamadı."));
+        window.history.replaceState({}, "", window.location.pathname);
+        setServerRefresh((value) => value + 1);
+        setToast({ text: "Kuzens topluluğuna katıldın.", tone: "success" });
       })
-      .catch(() => undefined);
-  }, []);
+      .catch((error) =>
+        setToast({
+          text: error instanceof Error ? error.message : "Davete katılınamadı.",
+          tone: "danger",
+        }),
+      );
+  }, [profile]);
 
   useEffect(() => {
-    if (selected?.kind !== "text") return;
-    let cancelled = false;
-    setLoadingMessages(true);
-    fetch(`/api/messages?channel=${encodeURIComponent(activeChannel)}`)
+    if (!profile) return;
+    apiFetch("/api/servers")
       .then((response) => response.json())
-      .then((data: { messages?: ChatMessage[] }) => {
-        if (!cancelled && data.messages?.length) {
-          setMessages((current) => {
-            const otherChannels = current.filter((message) => message.channelId !== activeChannel);
-            return [...otherChannels, ...data.messages!];
-          });
+      .then((data: { servers?: CommunityServer[] }) => {
+        const nextServers = data.servers || [];
+        setServers(nextServers);
+        if (nextServers.length && !nextServers.some((server) => server.id === activeServerId)) {
+          setActiveServerId(nextServers[0].id);
         }
       })
-      .catch(() => undefined)
-      .finally(() => {
-        if (!cancelled) setLoadingMessages(false);
-      });
+      .catch(() => undefined);
+  }, [activeServerId, profile, serverRefresh]);
+
+  useEffect(() => {
+    if (!profile) return;
+    apiFetch(`/api/channels?server=${encodeURIComponent(activeServerId)}`)
+      .then((response) => response.json())
+      .then((data: { channels?: Channel[] }) => {
+        if (data.channels?.length) {
+          setChannels(data.channels);
+          setActiveChannel((current) =>
+            data.channels!.some((channel) => channel.id === current)
+              ? current
+              : data.channels![0].id,
+          );
+        }
+      })
+      .catch(() => undefined);
+  }, [activeServerId, profile]);
+
+  useEffect(() => {
+    if (!profile || selected?.kind !== "text") return;
+    let cancelled = false;
+    async function syncMessages(initial = false) {
+      if (initial) setLoadingMessages(true);
+      try {
+        const after = initial ? "" : messageSyncAt.current[activeChannel];
+        const query = new URLSearchParams({
+          channel: activeChannel,
+          server: activeServerId,
+        });
+        if (after) query.set("after", after);
+        const response = await apiFetch(`/api/messages?${query.toString()}`);
+        if (!response.ok) return;
+        const data = (await response.json()) as {
+          messages?: ChatMessage[];
+          syncedAt?: string;
+        };
+        if (!cancelled) {
+          setMessages((current) => {
+            const otherChannels = current.filter(
+              (message) => message.channelId !== activeChannel,
+            );
+            const currentChannel = initial
+              ? []
+              : current.filter((message) => message.channelId === activeChannel);
+            return [
+              ...otherChannels,
+              ...mergeMessages(currentChannel, data.messages || []),
+            ];
+          });
+          if (data.syncedAt) messageSyncAt.current[activeChannel] = data.syncedAt;
+        }
+      } finally {
+        if (!cancelled && initial) setLoadingMessages(false);
+      }
+    }
+    void syncMessages(true);
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") void syncMessages(false);
+    }, 5_000);
     return () => {
       cancelled = true;
+      window.clearInterval(timer);
     };
-  }, [activeChannel, selected?.kind]);
+  }, [activeChannel, activeServerId, selected?.kind, profile]);
+
+  useEffect(() => {
+    if (!profile) return;
+    let cancelled = false;
+    async function loadMembers() {
+      const response = await apiFetch(
+        `/api/members?server=${encodeURIComponent(activeServerId)}`,
+      );
+      if (!response.ok) return;
+      const data = (await response.json()) as {
+        members?: Member[];
+        banned?: BannedMember[];
+        permissions?: number;
+      };
+      if (!cancelled) {
+        setMembers(data.members || []);
+        setBannedMembers(data.banned || []);
+        setPermissions(data.permissions || 0);
+      }
+    }
+    async function sendPresence() {
+      await apiFetch("/api/presence", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          voiceChannelId:
+            voiceConnected && selected?.kind === "voice" ? activeChannel : null,
+          sharing: voiceConnected && sharing,
+          serverId: activeServerId,
+        }),
+      }).catch(() => undefined);
+    }
+    void sendPresence().then(loadMembers);
+    const presenceTimer = window.setInterval(() => void sendPresence(), 25_000);
+    const membersTimer = window.setInterval(() => void loadMembers(), 10_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(presenceTimer);
+      window.clearInterval(membersTimer);
+    };
+  }, [activeChannel, activeServerId, profile, selected?.kind, sharing, voiceConnected]);
 
   useEffect(() => {
     const list = messageList.current;
@@ -270,27 +514,217 @@ export function KuzensApp() {
   }, [visibleMessages.length]);
 
   useEffect(() => {
+    if (sharing && previewVideo.current && displayStream.current) {
+      previewVideo.current.srcObject = displayStream.current;
+    }
+  }, [sharing]);
+
+  useEffect(() => {
     if (!toast) return;
     const timer = window.setTimeout(() => setToast(null), 2800);
     return () => window.clearTimeout(timer);
   }, [toast]);
 
   useEffect(() => {
+    const connections = peerConnections.current;
     return () => {
       voiceStream.current?.getTracks().forEach((track) => track.stop());
       displayStream.current?.getTracks().forEach((track) => track.stop());
+      connections.forEach((connection) => connection.close());
+      connections.clear();
     };
   }, []);
 
+  const sendRtcSignal = useCallback(async (
+    recipientProfileId: string,
+    type: RtcSignal["type"],
+    payload: unknown,
+  ) => {
+    if (!selected || selected.kind !== "voice") return;
+    const response = await apiFetch("/api/rtc", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        serverId: activeServerId,
+        channelId: selected.id,
+        recipientProfileId,
+        type,
+        payload,
+      }),
+    });
+    if (!response.ok) {
+      throw new Error(await responseError(response, "Ses bağlantısı kurulamadı."));
+    }
+  }, [activeServerId, selected]);
+
+  const closePeer = useCallback((profileId: string) => {
+    peerConnections.current.get(profileId)?.close();
+    peerConnections.current.delete(profileId);
+    pendingIce.current.delete(profileId);
+    setRemoteStreams((current) => {
+      const next = { ...current };
+      delete next[profileId];
+      return next;
+    });
+  }, []);
+
+  const negotiatePeer = useCallback(async (profileId: string, connection: RTCPeerConnection) => {
+    if (makingOffers.current.has(profileId) || connection.signalingState !== "stable") return;
+    makingOffers.current.add(profileId);
+    try {
+      const offer = await connection.createOffer();
+      await connection.setLocalDescription(offer);
+      await sendRtcSignal(profileId, "offer", connection.localDescription);
+    } finally {
+      makingOffers.current.delete(profileId);
+    }
+  }, [sendRtcSignal]);
+
+  const getOrCreatePeer = useCallback(async (profileId: string, initiate = false) => {
+    const existing = peerConnections.current.get(profileId);
+    if (existing) return existing;
+    const connection = new RTCPeerConnection({
+      iceServers: [{ urls: "stun:stun.cloudflare.com:3478" }],
+      bundlePolicy: "max-bundle",
+    });
+    peerConnections.current.set(profileId, connection);
+
+    for (const stream of [voiceStream.current, displayStream.current]) {
+      stream?.getTracks().forEach((track) => connection.addTrack(track, stream));
+    }
+    connection.addEventListener("icecandidate", (event) => {
+      if (event.candidate) {
+        void sendRtcSignal(profileId, "ice", event.candidate.toJSON()).catch(() => undefined);
+      }
+    });
+    connection.addEventListener("track", (event) => {
+      const stream = event.streams[0] || new MediaStream([event.track]);
+      setRemoteStreams((current) => ({ ...current, [profileId]: stream }));
+    });
+    connection.addEventListener("connectionstatechange", () => {
+      if (["failed", "closed"].includes(connection.connectionState)) closePeer(profileId);
+    });
+    if (initiate) await negotiatePeer(profileId, connection);
+    return connection;
+  }, [closePeer, negotiatePeer, sendRtcSignal]);
+
+  const applyRtcSignal = useCallback(async (signal: RtcSignal) => {
+    const payload = JSON.parse(signal.payload) as
+      | RTCSessionDescriptionInit
+      | RTCIceCandidateInit;
+    if (signal.type === "offer") {
+      const connection = await getOrCreatePeer(signal.senderProfileId);
+      await connection.setRemoteDescription(payload as RTCSessionDescriptionInit);
+      const queued = pendingIce.current.get(signal.senderProfileId) || [];
+      for (const candidate of queued) await connection.addIceCandidate(candidate);
+      pendingIce.current.delete(signal.senderProfileId);
+      const answer = await connection.createAnswer();
+      await connection.setLocalDescription(answer);
+      await sendRtcSignal(signal.senderProfileId, "answer", connection.localDescription);
+      return;
+    }
+    const connection = await getOrCreatePeer(signal.senderProfileId);
+    if (signal.type === "answer") {
+      if (connection.signalingState === "have-local-offer") {
+        await connection.setRemoteDescription(payload as RTCSessionDescriptionInit);
+        const queued = pendingIce.current.get(signal.senderProfileId) || [];
+        for (const candidate of queued) await connection.addIceCandidate(candidate);
+        pendingIce.current.delete(signal.senderProfileId);
+      }
+      return;
+    }
+    const candidate = payload as RTCIceCandidateInit;
+    if (connection.remoteDescription) {
+      await connection.addIceCandidate(candidate);
+    } else {
+      const queued = pendingIce.current.get(signal.senderProfileId) || [];
+      queued.push(candidate);
+      pendingIce.current.set(signal.senderProfileId, queued.slice(-50));
+    }
+  }, [getOrCreatePeer, sendRtcSignal]);
+
+  useEffect(() => {
+    if (!voiceConnected || !profile || selected?.kind !== "voice") {
+      peerConnections.current.forEach((_, profileId) => closePeer(profileId));
+      rtcSyncAt.current = new Date(Date.now() - 30_000).toISOString();
+      rtcChannelId.current = null;
+      return;
+    }
+    if (rtcChannelId.current !== selected.id) {
+      peerConnections.current.forEach((_, profileId) => closePeer(profileId));
+      rtcSyncAt.current = new Date(Date.now() - 30_000).toISOString();
+      rtcChannelId.current = selected.id;
+    }
+    const participantIds = new Set(
+      members
+        .filter(
+          (member) =>
+            member.voiceChannelId === selected.id && member.id !== profile.id,
+        )
+        .map((member) => member.id),
+    );
+    peerConnections.current.forEach((_, profileId) => {
+      if (!participantIds.has(profileId)) closePeer(profileId);
+    });
+    for (const profileId of participantIds) {
+      const initiator = profile.id.localeCompare(profileId) < 0;
+      void getOrCreatePeer(profileId, initiator).catch(() => closePeer(profileId));
+    }
+
+    let stopped = false;
+    async function pollSignals() {
+      const query = new URLSearchParams({
+        server: activeServerId,
+        channel: selected.id,
+        after: rtcSyncAt.current,
+      });
+      const response = await apiFetch(`/api/rtc?${query.toString()}`);
+      if (!response.ok || stopped) return;
+      const data = (await response.json()) as {
+        signals?: RtcSignal[];
+        syncedAt?: string;
+      };
+      for (const signal of data.signals || []) {
+        if (stopped) break;
+        await applyRtcSignal(signal).catch(() => closePeer(signal.senderProfileId));
+      }
+      if (data.syncedAt) rtcSyncAt.current = data.syncedAt;
+    }
+    void pollSignals();
+    const timer = window.setInterval(() => void pollSignals(), 1_200);
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+    };
+  }, [activeServerId, applyRtcSignal, closePeer, getOrCreatePeer, members, profile, selected, voiceConnected]);
+
   async function toggleVoice() {
     if (voiceConnected) {
+      await apiFetch("/api/presence", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          serverId: activeServerId,
+          voiceChannelId: null,
+          sharing: false,
+        }),
+      }).catch(() => undefined);
       voiceStream.current?.getTracks().forEach((track) => track.stop());
       voiceStream.current = null;
+      displayStream.current?.getTracks().forEach((track) => track.stop());
+      displayStream.current = null;
+      setSharing(false);
+      peerConnections.current.forEach((_, profileId) => closePeer(profileId));
       setVoiceConnected(false);
       setToast({ text: "Sesli odadan ayrıldın." });
       return;
     }
 
+    if (!selected || selected.kind !== "voice") return;
+    if ((permissions & 64) === 0) {
+      setToast({ text: "Bu ses odasına katılma yetkin yok.", tone: "danger" });
+      return;
+    }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -300,11 +734,28 @@ export function KuzensApp() {
         },
       });
       voiceStream.current = stream;
+      const presence = await apiFetch("/api/presence", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          serverId: activeServerId,
+          voiceChannelId: selected.id,
+          sharing: false,
+        }),
+      });
+      if (!presence.ok) {
+        stream.getTracks().forEach((track) => track.stop());
+        voiceStream.current = null;
+        throw new Error(await responseError(presence, "Ses odasına bağlanılamadı."));
+      }
       setVoiceConnected(true);
       setMuted(false);
-      setToast({ text: "Muhabbet odasına bağlandın.", tone: "success" });
-    } catch {
-      setToast({ text: "Mikrofon izni verilmedi.", tone: "danger" });
+      setToast({ text: `${selected.name} odasına bağlandın.`, tone: "success" });
+    } catch (error) {
+      setToast({
+        text: error instanceof Error ? error.message : "Mikrofon izni verilmedi.",
+        tone: "danger",
+      });
     }
   }
 
@@ -318,13 +769,39 @@ export function KuzensApp() {
 
   async function toggleShare() {
     if (sharing) {
+      const tracks = displayStream.current?.getTracks() || [];
+      peerConnections.current.forEach((connection, profileId) => {
+        connection.getSenders().forEach((sender) => {
+          if (sender.track && tracks.some((track) => track.id === sender.track?.id)) {
+            connection.removeTrack(sender);
+          }
+        });
+        void negotiatePeer(profileId, connection).catch(() => undefined);
+      });
       displayStream.current?.getTracks().forEach((track) => track.stop());
       displayStream.current = null;
       if (previewVideo.current) previewVideo.current.srcObject = null;
       setSharing(false);
+      await apiFetch("/api/presence", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          serverId: activeServerId,
+          voiceChannelId: activeChannel,
+          sharing: false,
+        }),
+      }).catch(() => undefined);
       return;
     }
 
+    if (!voiceConnected || selected?.kind !== "voice") {
+      setToast({ text: "Önce bir ses odasına bağlanmalısın.", tone: "danger" });
+      return;
+    }
+    if ((permissions & 128) === 0) {
+      setToast({ text: "Ekran paylaşma yetkin yok.", tone: "danger" });
+      return;
+    }
     try {
       const stream = await navigator.mediaDevices.getDisplayMedia({
         video: { frameRate: { ideal: 30, max: 60 } },
@@ -334,14 +811,32 @@ export function KuzensApp() {
       if (previewVideo.current) {
         previewVideo.current.srcObject = stream;
       }
-      stream.getVideoTracks()[0]?.addEventListener("ended", () => {
-        setSharing(false);
-        displayStream.current = null;
+      peerConnections.current.forEach((connection, profileId) => {
+        stream.getTracks().forEach((track) => connection.addTrack(track, stream));
+        void negotiatePeer(profileId, connection).catch(() => undefined);
       });
+      stream.getVideoTracks()[0]?.addEventListener("ended", () => {
+        if (displayStream.current) void toggleShare();
+      });
+      const presence = await apiFetch("/api/presence", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          serverId: activeServerId,
+          voiceChannelId: activeChannel,
+          sharing: true,
+        }),
+      });
+      if (!presence.ok) throw new Error(await responseError(presence, "Ekran paylaşımı başlatılamadı."));
       setSharing(true);
       setToast({ text: "Ekran paylaşımı başladı.", tone: "success" });
-    } catch {
-      setToast({ text: "Ekran paylaşımı iptal edildi.", tone: "danger" });
+    } catch (error) {
+      displayStream.current?.getTracks().forEach((track) => track.stop());
+      displayStream.current = null;
+      setToast({
+        text: error instanceof Error ? error.message : "Ekran paylaşımı iptal edildi.",
+        tone: "danger",
+      });
     }
   }
 
@@ -356,25 +851,77 @@ export function KuzensApp() {
       authorName: profile?.displayName || "Savaş",
       authorTag: `@${profile?.username || "savas"}`,
       content,
+      replyToId: replyingTo?.id || null,
       createdAt: new Date().toISOString(),
     };
     setMessages((current) => [...current, optimistic]);
     setDraft("");
+    setReplyingTo(null);
 
     try {
-      const response = await fetch("/api/messages", {
+      const response = await apiFetch("/api/messages", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ channelId: activeChannel, content }),
+        body: JSON.stringify({
+          channelId: activeChannel,
+          serverId: activeServerId,
+          content,
+          replyToId: optimistic.replyToId,
+        }),
       });
-      if (!response.ok) throw new Error("save failed");
+      if (!response.ok) throw new Error(await responseError(response, "Mesaj gönderilemedi."));
       const data = (await response.json()) as { message: ChatMessage };
       setMessages((current) =>
         current.map((message) => (message.id === optimistic.id ? data.message : message)),
       );
-    } catch {
-      setToast({ text: "Demo modunda: mesaj yalnızca bu oturumda.", tone: "danger" });
+    } catch (error) {
+      setMessages((current) => current.filter((message) => message.id !== optimistic.id));
+      setToast({
+        text: error instanceof Error ? error.message : "Mesaj gönderilemedi.",
+        tone: "danger",
+      });
     }
+  }
+
+  async function editMessage(message: ChatMessage) {
+    if (message.deletedAt) return;
+    const content = window.prompt("Mesajı düzenle", message.content)?.trim();
+    if (!content || content === message.content) return;
+    const response = await apiFetch("/api/messages", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id: message.id, serverId: activeServerId, content }),
+    });
+    if (!response.ok) {
+      setToast({ text: await responseError(response, "Mesaj düzenlenemedi."), tone: "danger" });
+      return;
+    }
+    const data = (await response.json()) as { message: ChatMessage };
+    setMessages((current) =>
+      current.map((item) => (item.id === message.id ? data.message : item)),
+    );
+    setToast({ text: "Mesaj düzenlendi.", tone: "success" });
+  }
+
+  async function deleteMessage(message: ChatMessage) {
+    if (message.deletedAt || !window.confirm("Bu mesaj silinsin mi?")) return;
+    const response = await apiFetch("/api/messages", {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id: message.id, serverId: activeServerId }),
+    });
+    if (!response.ok) {
+      setToast({ text: await responseError(response, "Mesaj silinemedi."), tone: "danger" });
+      return;
+    }
+    const data = (await response.json()) as { deletedAt: string };
+    setMessages((current) =>
+      current.map((item) =>
+        item.id === message.id
+          ? { ...item, content: "Mesaj silindi.", deletedAt: data.deletedAt, editedAt: null }
+          : item,
+      ),
+    );
   }
 
   async function createChannel(event: FormEvent) {
@@ -383,7 +930,7 @@ export function KuzensApp() {
     if (!name) return;
     const optimistic: Channel = {
       id: `${name}-${Date.now()}`,
-      serverId: "kuzens",
+      serverId: activeServerId,
       name,
       kind: newChannelKind,
       position: channels.length,
@@ -394,21 +941,66 @@ export function KuzensApp() {
     setActiveChannel(optimistic.id);
 
     try {
-      const response = await fetch("/api/channels", {
+      const response = await apiFetch("/api/channels", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ name, kind: newChannelKind, serverId: "kuzens" }),
+        body: JSON.stringify({ name, kind: newChannelKind, serverId: activeServerId }),
       });
-      if (!response.ok) throw new Error("create failed");
+      if (!response.ok) throw new Error(await responseError(response, "Oda oluşturulamadı."));
       const data = (await response.json()) as { channel: Channel };
       setChannels((current) =>
         current.map((channel) => (channel.id === optimistic.id ? data.channel : channel)),
       );
       setActiveChannel(data.channel.id);
       setToast({ text: `#${data.channel.name} oluşturuldu.`, tone: "success" });
-    } catch {
-      setToast({ text: "Demo modunda: oda yalnızca bu oturumda.", tone: "danger" });
+    } catch (error) {
+      setChannels((current) => current.filter((channel) => channel.id !== optimistic.id));
+      setActiveChannel(channels[0]?.id || "genel");
+      setToast({
+        text: error instanceof Error ? error.message : "Oda oluşturulamadı.",
+        tone: "danger",
+      });
     }
+  }
+
+  async function renameChannel() {
+    if (!selected || !canManageChannels) return;
+    const name = window.prompt("Yeni oda adı", selected.name)?.trim();
+    if (!name || name === selected.name) return;
+    const response = await apiFetch("/api/channels", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id: selected.id, name, serverId: activeServerId }),
+    });
+    if (!response.ok) {
+      setToast({ text: await responseError(response, "Oda güncellenemedi."), tone: "danger" });
+      return;
+    }
+    const data = (await response.json()) as { channel: Channel };
+    setChannels((current) =>
+      current.map((channel) => (channel.id === data.channel.id ? data.channel : channel)),
+    );
+    setToast({ text: "Oda adı güncellendi.", tone: "success" });
+  }
+
+  async function deleteChannel() {
+    if (!selected || !canManageChannels || !window.confirm(`#${selected.name} silinsin mi?`)) {
+      return;
+    }
+    const response = await apiFetch("/api/channels", {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id: selected.id, serverId: activeServerId }),
+    });
+    if (!response.ok) {
+      setToast({ text: await responseError(response, "Oda silinemedi."), tone: "danger" });
+      return;
+    }
+    setChannels((current) => current.filter((channel) => channel.id !== selected.id));
+    setActiveChannel(
+      channels.find((channel) => channel.id !== selected.id)?.id || "genel",
+    );
+    setToast({ text: "Oda silindi.", tone: "success" });
   }
 
   async function registerProfile(event: FormEvent<HTMLFormElement>) {
@@ -418,12 +1010,14 @@ export function KuzensApp() {
     const form = new FormData(event.currentTarget);
 
     try {
-      const response = await fetch("/api/profile", {
+      const inviteCode = new URLSearchParams(window.location.search).get("davet");
+      const response = await apiFetch("/api/profile", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           displayName: registrationName,
           username: registrationUsername,
+          inviteCode,
           birthConfirmed: form.get("birthConfirmed") === "on",
           termsAccepted: form.get("termsAccepted") === "on",
           noticeRead: form.get("noticeRead") === "on",
@@ -446,16 +1040,22 @@ export function KuzensApp() {
   async function openRoles() {
     setModal("roles");
     setRolesLoading(true);
+    setRolesCanManage(false);
     try {
-      const response = await fetch("/api/roles?server=kuzens");
+      const response = await apiFetch(
+        `/api/roles?server=${encodeURIComponent(activeServerId)}`,
+      );
+      if (!response.ok) throw new Error(await responseError(response, "Yetkiler yüklenemedi."));
       const data = (await response.json()) as {
         roles?: Role[];
         assignments?: RoleAssignment[];
+        canManage?: boolean;
       };
       const nextRoles = data.roles || [];
       setRoleItems(nextRoles);
       setRoleAssignments(data.assignments || []);
-      setSelectedRoleId((current) => current || nextRoles[0]?.id || "");
+      setRolesCanManage(Boolean(data.canManage));
+      setSelectedRoleId(nextRoles[0]?.id || "");
     } catch {
       setToast({ text: "Yetkiler şu anda yüklenemedi.", tone: "danger" });
     } finally {
@@ -481,8 +1081,8 @@ export function KuzensApp() {
       return [
         ...current,
         {
-          id: `kuzens:${memberTag}`,
-          serverId: "kuzens",
+          id: `${activeServerId}:${memberTag}`,
+          serverId: activeServerId,
           memberTag,
           roleId,
         },
@@ -495,11 +1095,11 @@ export function KuzensApp() {
     if (!selectedRole) return;
     setRolesSaving(true);
     try {
-      const response = await fetch("/api/roles", {
+      const response = await apiFetch("/api/roles", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          serverId: "kuzens",
+          serverId: activeServerId,
           roleId: selectedRole.id,
           permissions: selectedRole.permissions,
           assignments: members.map((member) => ({
@@ -524,17 +1124,200 @@ export function KuzensApp() {
     }
   }
 
-  async function copyInvite() {
-    const invite = `${window.location.origin}/?davet=kuzens-7F2K`;
+  async function loadFriends() {
+    setFriendsLoading(true);
     try {
-      await navigator.clipboard.writeText(invite);
-      setToast({ text: "Davet bağlantısı kopyalandı.", tone: "success" });
-    } catch {
-      setToast({ text: invite });
+      const response = await apiFetch("/api/friends");
+      if (!response.ok) throw new Error(await responseError(response, "Arkadaşlar yüklenemedi."));
+      const data = (await response.json()) as { friends?: FriendItem[] };
+      setFriendItems(data.friends || []);
+    } catch (error) {
+      setToast({
+        text: error instanceof Error ? error.message : "Arkadaşlar yüklenemedi.",
+        tone: "danger",
+      });
+    } finally {
+      setFriendsLoading(false);
     }
   }
 
+  function openFriends() {
+    setModal("friends");
+    void loadFriends();
+  }
+
+  async function sendFriendRequest(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const username = friendUsername.trim();
+    if (!username) return;
+    const response = await apiFetch("/api/friends", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "request", username }),
+    });
+    if (!response.ok) {
+      setToast({ text: await responseError(response, "İstek gönderilemedi."), tone: "danger" });
+      return;
+    }
+    setFriendUsername("");
+    setToast({ text: "Arkadaşlık isteği gönderildi.", tone: "success" });
+    await loadFriends();
+  }
+
+  async function friendAction(
+    action: "accept" | "remove" | "block",
+    profileId: string,
+  ) {
+    const response = await apiFetch("/api/friends", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action, profileId }),
+    });
+    if (!response.ok) {
+      setToast({ text: await responseError(response, "İşlem tamamlanamadı."), tone: "danger" });
+      return;
+    }
+    await loadFriends();
+  }
+
+  async function moderateMember(
+    member: Member | BannedMember,
+    action: "kick" | "ban" | "unban",
+  ) {
+    const label =
+      action === "kick"
+        ? `${member.name} topluluktan çıkarılsın mı?`
+        : action === "ban"
+          ? `${member.name} yasaklansın mı? Yeniden davetle katılamaz.`
+          : `${member.name} kullanıcısının yasağı kaldırılsın mı?`;
+    if (!window.confirm(label)) return;
+    const reason =
+      action === "ban"
+        ? window.prompt("Yasaklama nedeni", "Topluluk kuralları ihlali")?.trim()
+        : undefined;
+    if (action === "ban" && reason === undefined) return;
+    const response = await apiFetch("/api/members", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        serverId: activeServerId,
+        profileId: member.id,
+        action,
+        reason,
+      }),
+    });
+    if (!response.ok) {
+      setToast({
+        text: await responseError(response, "Moderasyon işlemi tamamlanamadı."),
+        tone: "danger",
+      });
+      return;
+    }
+    if (action === "unban") {
+      setBannedMembers((current) => current.filter((item) => item.id !== member.id));
+    } else {
+      setMembers((current) => current.filter((item) => item.id !== member.id));
+      if (action === "ban") {
+        setBannedMembers((current) => [
+          ...current.filter((item) => item.id !== member.id),
+          {
+            id: member.id,
+            name: member.name,
+            tag: "tag" in member ? member.tag : "",
+            reason: reason || "Topluluk kuralları ihlali",
+            createdAt: new Date().toISOString(),
+          },
+        ]);
+      }
+    }
+    setToast({
+      text:
+        action === "kick"
+          ? "Üye topluluktan çıkarıldı."
+          : action === "ban"
+            ? "Üye yasaklandı."
+            : "Üyenin yasağı kaldırıldı.",
+      tone: "success",
+    });
+  }
+
+  async function copyInvite() {
+    try {
+      const response = await apiFetch("/api/invites", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "create", serverId: activeServerId }),
+      });
+      if (!response.ok) throw new Error(await responseError(response, "Davet oluşturulamadı."));
+      const data = (await response.json()) as { url: string };
+      await navigator.clipboard.writeText(data.url);
+      setToast({ text: "Davet bağlantısı kopyalandı.", tone: "success" });
+    } catch (error) {
+      setToast({
+        text: error instanceof Error ? error.message : "Davet oluşturulamadı.",
+        tone: "danger",
+      });
+    }
+  }
+
+  async function createServer(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const name = newServerName.trim();
+    if (!name) return;
+    const response = await apiFetch("/api/servers", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    if (!response.ok) {
+      setToast({ text: await responseError(response, "Topluluk kurulamadı."), tone: "danger" });
+      return;
+    }
+    const data = (await response.json()) as { server: CommunityServer };
+    setServers((current) => [...current, data.server]);
+    setNewServerName("");
+    setModal(null);
+    setActiveServerId(data.server.id);
+    setToast({ text: `${data.server.name} topluluğu hazır.`, tone: "success" });
+  }
+
+  async function deleteActiveServer() {
+    if (
+      activeServerId === "kuzens" ||
+      !ownsActiveServer ||
+      !window.confirm(`${activeServer.name} topluluğu ve tüm mesajları kalıcı olarak silinsin mi?`)
+    ) {
+      return;
+    }
+    if (voiceConnected) await toggleVoice();
+    const response = await apiFetch("/api/servers", {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id: activeServerId }),
+    });
+    if (!response.ok) {
+      setToast({ text: await responseError(response, "Topluluk silinemedi."), tone: "danger" });
+      return;
+    }
+    const nextServers = servers.filter((server) => server.id !== activeServerId);
+    setServers(nextServers);
+    setActiveServerId(nextServers[0]?.id || "kuzens");
+    setToast({ text: "Topluluk silindi.", tone: "success" });
+  }
+
+  async function chooseServer(serverId: string) {
+    if (serverId === activeServerId) return;
+    if (voiceConnected) await toggleVoice();
+    setActiveServerId(serverId);
+    setMessages([]);
+    setMembers([]);
+    setPermissions(0);
+  }
+
   function chooseChannel(channel: Channel) {
+    if (voiceConnected && channel.kind !== "voice") {
+      void toggleVoice();
+    }
     setActiveChannel(channel.id);
     setMobileChannels(false);
     if (channel.kind === "voice" && !voiceConnected) {
@@ -549,14 +1332,21 @@ export function KuzensApp() {
           K<span>.</span>
         </button>
         <div className="rail-line" />
-        <button className="server-badge active" aria-label="Kuzens sunucusu">
-          KZ
-          <i />
+        {servers.map((server) => (
+          <button
+            className={`server-badge ${server.id === activeServerId ? "active" : ""}`}
+            aria-label={`${server.name} topluluğu`}
+            key={server.id}
+            onClick={() => void chooseServer(server.id)}
+          >
+            {server.icon}
+            {server.id === activeServerId && <i />}
+          </button>
+        ))}
+        <button className="server-badge friends" aria-label="Arkadaşlar" onClick={openFriends}>
+          A
         </button>
-        <button className="server-badge friends" aria-label="Arkadaşlar">
-          5
-        </button>
-        <button className="server-add" aria-label="Sunucu ekle" onClick={() => setToast({ text: "Sunucu oluşturma sihirbazı sıradaki adımda." })}>
+        <button className="server-add" aria-label="Topluluk kur" onClick={() => setModal("server")}>
           +
         </button>
         <div className="rail-spacer" />
@@ -569,7 +1359,7 @@ export function KuzensApp() {
         <header className="server-header">
           <div>
             <span className="eyebrow">TOPLULUK</span>
-            <strong>Kuzens</strong>
+            <strong>{activeServer.name}</strong>
           </div>
           <button className="icon-button" aria-label="Sunucu menüsü" onClick={openRoles}>
             •••
@@ -579,13 +1369,18 @@ export function KuzensApp() {
         <div className="server-actions">
           <button onClick={copyInvite}><span>↗</span> Arkadaşlarını davet et</button>
           <button onClick={openRoles}><span>♢</span> Roller ve yetkiler</button>
+          {ownsActiveServer && activeServerId !== "kuzens" && (
+            <button onClick={() => void deleteActiveServer()}><span>×</span> Topluluğu sil</button>
+          )}
         </div>
 
         <nav className="channel-scroll" aria-label="Odalar">
           <div className="channel-section">
             <div className="section-label">
               <span>METİN ODALARI</span>
-              <button aria-label="Metin odası oluştur" onClick={() => { setNewChannelKind("text"); setModal("channel"); }}>+</button>
+              {canManageChannels && (
+                <button aria-label="Metin odası oluştur" onClick={() => { setNewChannelKind("text"); setModal("channel"); }}>+</button>
+              )}
             </div>
             {textChannels.map((channel) => (
               <button
@@ -603,7 +1398,9 @@ export function KuzensApp() {
           <div className="channel-section">
             <div className="section-label">
               <span>SES ODALARI</span>
-              <button aria-label="Ses odası oluştur" onClick={() => { setNewChannelKind("voice"); setModal("channel"); }}>+</button>
+              {canManageChannels && (
+                <button aria-label="Ses odası oluştur" onClick={() => { setNewChannelKind("voice"); setModal("channel"); }}>+</button>
+              )}
             </div>
             {voiceChannels.map((channel) => (
               <div key={channel.id}>
@@ -613,13 +1410,23 @@ export function KuzensApp() {
                 >
                   <span className="channel-symbol">◖</span>
                   <span>{channel.name}</span>
-                  {channel.id === "muhabbet" && <em className="live-dot">3</em>}
+                  {members.some((member) => member.voiceChannelId === channel.id) && (
+                    <em className="live-dot">
+                      {members.filter((member) => member.voiceChannelId === channel.id).length}
+                    </em>
+                  )}
                 </button>
-                {channel.id === "muhabbet" && (
+                {members.some((member) => member.voiceChannelId === channel.id) && (
                   <div className="voice-members">
-                    <span><Avatar name="Batu" size="sm" tone="blue" /> Batu <i>)))</i></span>
-                    <span><Avatar name="Ece" size="sm" tone="pink" /> Ece</span>
-                    <span><Avatar name="Deniz" size="sm" tone="orange" /> Deniz</span>
+                    {members
+                      .filter((member) => member.voiceChannelId === channel.id)
+                      .map((member) => (
+                        <span key={member.id}>
+                          <Avatar name={member.name} size="sm" tone={toneFor(member.id)} />
+                          {member.name}
+                          {member.sharing && <i>YAYIN</i>}
+                        </span>
+                      ))}
                   </div>
                 )}
               </div>
@@ -631,7 +1438,7 @@ export function KuzensApp() {
           <section className="voice-status">
             <div>
               <span className="signal-bars">▮▮▮</span>
-              <div><strong>Ses bağlantısı iyi</strong><small>Muhabbet / Kuzens</small></div>
+              <div><strong>Ses bağlantısı iyi</strong><small>{selected?.name} / {activeServer.name}</small></div>
             </div>
             <button onClick={toggleVoice} aria-label="Sesli odadan ayrıl">×</button>
           </section>
@@ -665,6 +1472,14 @@ export function KuzensApp() {
             <div className="clear-actions">
               <button onClick={copyInvite}>Davet et</button>
               <button onClick={openRoles}>Yetkiler</button>
+              {canManageChannels && (
+                <>
+                  <button onClick={() => void renameChannel()}>Düzenle</button>
+                  {selected?.id !== "genel" && (
+                    <button onClick={() => void deleteChannel()}>Sil</button>
+                  )}
+                </>
+              )}
             </div>
           )}
           <label className="search-box">
@@ -685,25 +1500,30 @@ export function KuzensApp() {
               <div>
                 <span className="live-pill">CANLI</span>
                 <h1>{selected.name}</h1>
-                <p>3 kişi konuşuyor · Düşük gecikmeli ses</p>
+                <p>{voiceRoomMembers.length} kişi bağlı · Uçtan uca WebRTC medya</p>
               </div>
               <div className="connection-grade"><i /> Bağlantı iyi</div>
             </div>
 
             <div className="speaker-grid">
-              {members.slice(0, 3).map((member, index) => (
-                <article className={`speaker-card ${index === 1 ? "speaking" : ""}`} key={member.name}>
+              {visibleVoiceMembers.map((member) => (
+                <article className={`speaker-card ${member.id === profile?.id ? "speaking" : ""}`} key={member.id}>
                   <div className="speaker-orbit">
-                    <Avatar name={member.name} tone={member.tone} size="lg" />
+                    <Avatar name={member.name} tone={toneFor(member.id)} size="lg" />
                   </div>
                   <strong>{member.name}</strong>
-                  <span>{index === 1 ? "Konuşuyor" : "Dinliyor"}</span>
+                  <span>{member.id === profile?.id ? "Sen" : memberStatus(member)}</span>
                   <button aria-label={`${member.name} ses düzeyi`}>•••</button>
                 </article>
               ))}
               <article className={`screen-card ${sharing ? "sharing" : ""}`}>
                 {sharing ? (
                   <video ref={previewVideo} autoPlay muted playsInline />
+                ) : remoteSharer ? (
+                  <RemoteVideo
+                    stream={remoteStreams[remoteSharer.id]}
+                    label={remoteSharer.name}
+                  />
                 ) : (
                   <div>
                     <span>▣</span>
@@ -714,6 +1534,12 @@ export function KuzensApp() {
                 )}
                 {sharing && <button className="stop-share" onClick={toggleShare}>Paylaşımı durdur</button>}
               </article>
+            </div>
+
+            <div className="remote-audio" aria-hidden="true">
+              {Object.entries(remoteStreams).map(([memberId, stream]) => (
+                <RemoteAudio key={memberId} stream={stream} muted={deafened} />
+              ))}
             </div>
 
             <div className="voice-controls">
@@ -750,14 +1576,32 @@ export function KuzensApp() {
                         </div>
                       )}
                       {compact && <time className="compact-time">{timeLabel(message.createdAt)}</time>}
-                      <p>{message.content}</p>
-                      <LinkEmbed content={message.content} />
+                      {message.replyToId && (
+                        <button
+                          className="message-reply"
+                          onClick={() => {
+                            const replied = messages.find((item) => item.id === message.replyToId);
+                            if (replied) setReplyingTo(replied);
+                          }}
+                        >
+                          ↩ {messages.find((item) => item.id === message.replyToId)?.authorName || "Mesaj"}:
+                          {" "}
+                          {messages.find((item) => item.id === message.replyToId)?.content.slice(0, 80) || "Önceki mesaj"}
+                        </button>
+                      )}
+                      <p className={message.deletedAt ? "deleted-message" : ""}>
+                        {message.content}
+                        {message.editedAt && !message.deletedAt && <small> (düzenlendi)</small>}
+                      </p>
+                      {!message.deletedAt && <LinkEmbed content={message.content} />}
                     </div>
-                    <div className="message-tools">
-                      <button aria-label="Tepki ekle">☺</button>
-                      <button aria-label="Yanıtla">↩</button>
-                      <button aria-label="Daha fazla">•••</button>
-                    </div>
+                    {!message.id.startsWith("local-") && !message.deletedAt && (
+                      <div className="message-tools">
+                        <button aria-label="Düzenle" onClick={() => void editMessage(message)}>✎</button>
+                        <button aria-label="Yanıtla" onClick={() => setReplyingTo(message)}>↩</button>
+                        <button aria-label="Sil" onClick={() => void deleteMessage(message)}>×</button>
+                      </div>
+                    )}
                   </article>
                 );
               })}
@@ -771,7 +1615,14 @@ export function KuzensApp() {
             </div>
 
             <form className="composer-wrap" onSubmit={sendMessage}>
-              <div className="reply-hint"><span>✦</span> Kuzens’e hoş geldin — güzel bir şey söyle.</div>
+              {replyingTo ? (
+                <div className="reply-hint active">
+                  <span>↩</span> {replyingTo.authorName} kullanıcısına yanıt veriyorsun.
+                  <button type="button" onClick={() => setReplyingTo(null)}>İptal</button>
+                </div>
+              ) : (
+                <div className="reply-hint"><span>✦</span> Kuzens’e hoş geldin — güzel bir şey söyle.</div>
+              )}
               <div className="composer">
                 <button type="button" aria-label="Dosya ekle">+</button>
                 <textarea
@@ -798,24 +1649,93 @@ export function KuzensApp() {
 
       <aside className="member-sidebar">
         <div className="member-summary">
-          <span><i /> 3 çevrimiçi</span>
+          <span><i /> {onlineMembers.length} çevrimiçi</span>
           <button onClick={copyInvite}>+ Davet et</button>
         </div>
         <div className="member-list">
-          <span className="member-group">ÇEVRİMİÇİ — 3</span>
-          {members.filter((member) => member.online).map((member) => (
-            <button className="member-row" key={member.tag}>
-              <Avatar name={member.name} tone={member.tone} online />
-              <span><strong>{member.name}</strong><small>{member.status}</small></span>
-            </button>
+          <span className="member-group">ÇEVRİMİÇİ — {onlineMembers.length}</span>
+          {onlineMembers.map((member) => (
+            <div className="member-row" key={member.id}>
+              <Avatar name={member.name} tone={toneFor(member.id)} online />
+              <span className="member-copy"><strong>{member.name}</strong><small>{memberStatus(member)}</small></span>
+              {member.id !== profile?.id && !member.role?.id.endsWith(":owner") && (
+                <span className="member-moderation">
+                  {canKickMembers && (
+                    <button
+                      onClick={() => void moderateMember(member, "kick")}
+                      title="Topluluktan çıkar"
+                      aria-label={`${member.name} kullanıcısını topluluktan çıkar`}
+                    >
+                      Çıkar
+                    </button>
+                  )}
+                  {canBanMembers && (
+                    <button
+                      className="danger"
+                      onClick={() => void moderateMember(member, "ban")}
+                      title="Yasakla"
+                      aria-label={`${member.name} kullanıcısını yasakla`}
+                    >
+                      Yasakla
+                    </button>
+                  )}
+                </span>
+              )}
+            </div>
           ))}
-          <span className="member-group">ÇEVRİMDIŞI — 2</span>
-          {members.filter((member) => !member.online).map((member) => (
-            <button className="member-row offline" key={member.tag}>
-              <Avatar name={member.name} tone={member.tone} online={false} />
-              <span><strong>{member.name}</strong><small>{member.status}</small></span>
-            </button>
+          <span className="member-group">ÇEVRİMDIŞI — {offlineMembers.length}</span>
+          {offlineMembers.map((member) => (
+            <div className="member-row offline" key={member.id}>
+              <Avatar name={member.name} tone={toneFor(member.id)} online={false} />
+              <span className="member-copy"><strong>{member.name}</strong><small>{memberStatus(member)}</small></span>
+              {member.id !== profile?.id && !member.role?.id.endsWith(":owner") && (
+                <span className="member-moderation">
+                  {canKickMembers && (
+                    <button
+                      onClick={() => void moderateMember(member, "kick")}
+                      title="Topluluktan çıkar"
+                      aria-label={`${member.name} kullanıcısını topluluktan çıkar`}
+                    >
+                      Çıkar
+                    </button>
+                  )}
+                  {canBanMembers && (
+                    <button
+                      className="danger"
+                      onClick={() => void moderateMember(member, "ban")}
+                      title="Yasakla"
+                      aria-label={`${member.name} kullanıcısını yasakla`}
+                    >
+                      Yasakla
+                    </button>
+                  )}
+                </span>
+              )}
+            </div>
           ))}
+          {canBanMembers && bannedMembers.length > 0 && (
+            <>
+              <span className="member-group">YASAKLILAR — {bannedMembers.length}</span>
+              {bannedMembers.map((member) => (
+                <div className="member-row banned" key={member.id}>
+                  <Avatar name={member.name} tone={toneFor(member.id)} online={false} />
+                  <span className="member-copy">
+                    <strong>{member.name}</strong>
+                    <small>{member.reason}</small>
+                  </span>
+                  <span className="member-moderation visible">
+                    <button
+                      onClick={() => void moderateMember(member, "unban")}
+                      title="Yasağı kaldır"
+                      aria-label={`${member.name} kullanıcısının yasağını kaldır`}
+                    >
+                      Kaldır
+                    </button>
+                  </span>
+                </div>
+              ))}
+            </>
+          )}
         </div>
         <article className="community-card">
           <span>✦</span>
@@ -824,6 +1744,125 @@ export function KuzensApp() {
           <button onClick={copyInvite}>Bağlantıyı kopyala</button>
         </article>
       </aside>
+
+      {modal === "friends" && (
+        <div className="modal-backdrop" onMouseDown={() => setModal(null)}>
+          <section
+            className="modal-card friends-modal"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <button className="modal-close" onClick={() => setModal(null)} aria-label="Kapat">×</button>
+            <span className="eyebrow">ARKADAŞLAR</span>
+            <h2>Kuzenlerini bul</h2>
+            <p>Yalnızca tam kullanıcı adını bildiğin kişiye hedefli istek gönderilir.</p>
+            <form className="friend-request-form" onSubmit={sendFriendRequest}>
+              <div className="username-field">
+                <span>@</span>
+                <input
+                  minLength={3}
+                  maxLength={24}
+                  value={friendUsername}
+                  onChange={(event) =>
+                    setFriendUsername(
+                      event.target.value
+                        .toLocaleLowerCase("en-US")
+                        .replace(/^@/, "")
+                        .replace(/[^a-z0-9_]/g, ""),
+                    )
+                  }
+                  placeholder="kullanici_adi"
+                  aria-label="Arkadaş kullanıcı adı"
+                />
+              </div>
+              <button disabled={friendUsername.length < 3}>İstek gönder</button>
+            </form>
+            <div className="friend-list">
+              {friendsLoading ? (
+                <div className="roles-loading">Arkadaşlar yükleniyor…</div>
+              ) : friendItems.length ? (
+                friendItems
+                  .filter((item) => item.status !== "blocked")
+                  .map((item) => (
+                    <article key={item.id}>
+                      <Avatar
+                        name={item.profile.name}
+                        tone={toneFor(item.profile.id)}
+                        online={members.some(
+                          (member) => member.id === item.profile.id && member.online,
+                        )}
+                      />
+                      <span>
+                        <strong>{item.profile.name}</strong>
+                        <small>
+                          {item.profile.tag} ·{" "}
+                          {item.status === "accepted"
+                            ? "Arkadaş"
+                            : item.direction === "incoming"
+                              ? "Sana istek gönderdi"
+                              : "İstek bekliyor"}
+                        </small>
+                      </span>
+                      <div>
+                        {item.status === "pending" && item.direction === "incoming" && (
+                          <button onClick={() => void friendAction("accept", item.profile.id)}>
+                            Kabul et
+                          </button>
+                        )}
+                        <button onClick={() => void friendAction("remove", item.profile.id)}>
+                          Kaldır
+                        </button>
+                        <button
+                          className="danger"
+                          onClick={() => void friendAction("block", item.profile.id)}
+                        >
+                          Engelle
+                        </button>
+                      </div>
+                    </article>
+                  ))
+              ) : (
+                <div className="empty-search">
+                  <span>☺</span>
+                  <strong>Henüz arkadaşın yok</strong>
+                  <p>Kullanıcı adıyla güvenli bir istek gönder.</p>
+                </div>
+              )}
+            </div>
+          </section>
+        </div>
+      )}
+
+      {modal === "server" && (
+        <div className="modal-backdrop" onMouseDown={() => setModal(null)}>
+          <form
+            className="modal-card"
+            onSubmit={createServer}
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <button type="button" className="modal-close" onClick={() => setModal(null)} aria-label="Kapat">×</button>
+            <span className="eyebrow">YENİ TOPLULUK</span>
+            <h2>Kendi alanını kur</h2>
+            <p>İlk metin ve ses odaları, güvenli roller ve kurucu yetkileri otomatik hazırlanır.</p>
+            <label className="field-label">
+              TOPLULUK ADI
+              <div>
+                <span>K.</span>
+                <input
+                  autoFocus
+                  minLength={2}
+                  maxLength={40}
+                  value={newServerName}
+                  onChange={(event) => setNewServerName(event.target.value)}
+                  placeholder="Oyun Ekibi"
+                />
+              </div>
+            </label>
+            <button className="primary-button" disabled={newServerName.trim().length < 2}>
+              Topluluğu kur
+            </button>
+          </form>
+        </div>
+      )}
 
       {modal === "channel" && (
         <div className="modal-backdrop" onMouseDown={() => setModal(null)}>
@@ -909,15 +1948,22 @@ export function KuzensApp() {
                   </div>
                   <div className="member-role-grid">
                     {members.map((member) => (
-                      <label key={member.tag}>
-                        <span><Avatar name={member.name} tone={member.tone} size="sm" /><b>{member.name}</b></span>
+                      <label key={member.id}>
+                        <span><Avatar name={member.name} tone={toneFor(member.id)} size="sm" /><b>{member.name}</b></span>
                         <select
                           value={roleAssignments.find((item) => item.memberTag === member.tag)?.roleId || defaultMemberRoleId}
+                          disabled={member.role?.id.endsWith(":owner")}
                           onChange={(event) => updateMemberRole(member.tag, event.target.value)}
                         >
-                          {roleItems.map((role) => (
+                          {roleItems
+                            .filter(
+                              (role) =>
+                                !role.id.endsWith(":owner") ||
+                                member.role?.id.endsWith(":owner"),
+                            )
+                            .map((role) => (
                             <option key={role.id} value={role.id}>{role.name}</option>
-                          ))}
+                            ))}
                         </select>
                       </label>
                     ))}
@@ -925,10 +1971,10 @@ export function KuzensApp() {
                 </div>
               </div>
             )}
-            {!profile?.isOwner && !rolesLoading && (
-              <p className="owner-note">Bu ayarları yalnızca ilk kayıt olan Kurucu hesabı değiştirebilir.</p>
+            {!rolesCanManage && !rolesLoading && (
+              <p className="owner-note">Bu ayarları yalnızca bu topluluğun doğrulanmış Kurucu hesabı değiştirebilir.</p>
             )}
-            <button className="primary-button" disabled={rolesLoading || rolesSaving || !profile?.isOwner} onClick={saveRoles}>
+            <button className="primary-button" disabled={rolesLoading || rolesSaving || !rolesCanManage} onClick={saveRoles}>
               {rolesSaving ? "Kaydediliyor…" : "Değişiklikleri kaydet"}
             </button>
           </section>

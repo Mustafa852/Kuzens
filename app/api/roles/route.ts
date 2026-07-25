@@ -1,29 +1,40 @@
 import { asc, eq } from "drizzle-orm";
-import { getDb } from "@/db";
-import { memberRoles, profiles, roles } from "@/db/schema";
-import { getRequestIdentity } from "@/lib/identity";
+import { memberRoles, profiles, roles, serverMembers, servers } from "@/db/schema";
+import {
+  DEFAULT_SERVER_ID,
+  PERMISSIONS,
+  defaultRoles,
+  permissionsFor,
+  requireMember,
+  requirePermission,
+  writeAudit,
+} from "@/lib/community";
+import {
+  apiError,
+  apiJson,
+  assertTrustedMutation,
+  cleanText,
+  enforceRateLimit,
+  readJson,
+  requireIdentity,
+} from "@/lib/security";
 
-const ALL_PERMISSIONS = 255;
-
-function defaultRoles(serverId: string) {
-  const now = new Date().toISOString();
-  return [
-    { id: `${serverId}:owner`, serverId, name: "Kurucu", color: "#ffd166", permissions: ALL_PERMISSIONS, position: 0, createdAt: now },
-    { id: `${serverId}:moderator`, serverId, name: "Moderatör", color: "#9c7cff", permissions: 123, position: 1, createdAt: now },
-    { id: `${serverId}:member`, serverId, name: "Kuzen", color: "#5be39a", permissions: 193, position: 2, createdAt: now },
-  ];
-}
-
-async function ensureRoles(serverId: string) {
-  const db = getDb();
-  await db.insert(roles).values(defaultRoles(serverId)).onConflictDoNothing();
-  return db;
-}
+type RolesPayload = {
+  serverId?: string;
+  roleId?: string;
+  permissions?: number;
+  assignments?: Array<{ memberTag?: string; roleId?: string }>;
+};
 
 export async function GET(request: Request) {
-  const serverId = new URL(request.url).searchParams.get("server") || "kuzens";
   try {
-    const db = await ensureRoles(serverId);
+    const identity = requireIdentity(request);
+    const serverId = cleanText(
+      new URL(request.url).searchParams.get("server") || DEFAULT_SERVER_ID,
+      { max: 80 },
+    );
+    const { db, profile } = await requireMember(identity, serverId);
+    await db.insert(roles).values(defaultRoles(serverId)).onConflictDoNothing();
     const roleRows = await db
       .select()
       .from(roles)
@@ -33,76 +44,120 @@ export async function GET(request: Request) {
       .select()
       .from(memberRoles)
       .where(eq(memberRoles.serverId, serverId));
-    return Response.json({ roles: roleRows, assignments: assignmentRows });
-  } catch {
-    return Response.json({ roles: defaultRoles(serverId), assignments: [], mode: "demo" });
+    const [server] = await db.select().from(servers).where(eq(servers.id, serverId)).limit(1);
+    const canManage =
+      server?.ownerProfileId === profile.id ||
+      (serverId === DEFAULT_SERVER_ID && profile.isOwner);
+    return apiJson({
+      roles: roleRows,
+      assignments: assignmentRows,
+      permissions: await permissionsFor(profile, serverId),
+      canManage,
+    });
+  } catch (error) {
+    return apiError(error);
   }
 }
 
 export async function POST(request: Request) {
   try {
-    const identity = getRequestIdentity(request);
-    const payload = (await request.json()) as {
-      serverId?: string;
-      roleId?: string;
-      permissions?: number;
-      assignments?: Array<{ memberTag?: string; roleId?: string }>;
-    };
-    const serverId = payload.serverId?.trim() || "kuzens";
-    const db = await ensureRoles(serverId);
-    const [profile] = await db
-      .select()
-      .from(profiles)
-      .where(eq(profiles.email, identity.email))
-      .limit(1);
-
-    if (!profile?.isOwner) {
-      return Response.json({ error: "Bu işlem için Kurucu yetkisi gerekiyor." }, { status: 403 });
+    assertTrustedMutation(request);
+    const identity = requireIdentity(request);
+    const payload = await readJson<RolesPayload>(request, 16_384);
+    const serverId = cleanText(payload.serverId || DEFAULT_SERVER_ID, { max: 80 });
+    const { db, profile } = await requireMember(identity, serverId);
+    await requirePermission(profile, PERMISSIONS.manageRoles, serverId);
+    const [server] = await db.select().from(servers).where(eq(servers.id, serverId)).limit(1);
+    const isServerOwner =
+      server?.ownerProfileId === profile.id ||
+      (serverId === DEFAULT_SERVER_ID && profile.isOwner);
+    if (!isServerOwner) {
+      return apiJson(
+        { error: "Rol hiyerarşisini yalnızca doğrulanmış Kurucu hesabı değiştirebilir." },
+        { status: 403 },
+      );
     }
-
+    await enforceRateLimit(request, "roles-update", identity.email, 20, 60 * 60_000);
+    const roleId = typeof payload.roleId === "string" ? payload.roleId : "";
     if (
-      !payload.roleId ||
+      !roleId.startsWith(`${serverId}:`) ||
       !Number.isInteger(payload.permissions) ||
       payload.permissions! < 0 ||
-      payload.permissions! > ALL_PERMISSIONS
+      payload.permissions! > 255
     ) {
-      return Response.json({ error: "Geçersiz rol veya yetki değeri." }, { status: 400 });
+      return apiJson({ error: "Geçersiz rol veya yetki değeri." }, { status: 400 });
+    }
+    if (roleId.endsWith(":owner") && payload.permissions !== 255) {
+      return apiJson({ error: "Kurucu rolünün tüm yetkileri açık kalmalı." }, { status: 400 });
     }
 
-    const roleId = payload.roleId;
-    if (!roleId.startsWith(`${serverId}:`)) {
-      return Response.json({ error: "Rol bu sunucuya ait değil." }, { status: 400 });
-    }
-    if (roleId.endsWith(":owner") && payload.permissions !== ALL_PERMISSIONS) {
-      return Response.json({ error: "Kurucu rolünün tüm yetkileri açık kalmalıdır." }, { status: 400 });
+    const validRoles = await db
+      .select()
+      .from(roles)
+      .where(eq(roles.serverId, serverId));
+    const validRoleIds = new Set(validRoles.map((role) => role.id));
+    if (!validRoleIds.has(roleId)) {
+      return apiJson({ error: "Rol bulunamadı." }, { status: 404 });
     }
 
-    await db.update(roles).set({ permissions: payload.permissions }).where(eq(roles.id, roleId));
+    const membershipRows = await db
+      .select({ profileId: serverMembers.profileId })
+      .from(serverMembers)
+      .where(eq(serverMembers.serverId, serverId));
+    const allowedProfileIds = new Set(membershipRows.map((item) => item.profileId));
+    allowedProfileIds.add(profile.id);
+    const profileRows = await db.select().from(profiles);
+    const allowedTags = new Set(
+      profileRows
+        .filter((item) => allowedProfileIds.has(item.id))
+        .map((item) => `@${item.username}`),
+    );
+    const ownerTag = `@${profile.username}`;
+    const ownerRoleId = `${serverId}:owner`;
+    const validatedAssignments: Array<{ memberTag: string; roleId: string }> = [];
 
     for (const assignment of payload.assignments ?? []) {
       const memberTag = assignment.memberTag?.trim();
       const assignedRoleId = assignment.roleId?.trim();
-      if (!memberTag || !assignedRoleId || !assignedRoleId.startsWith(`${serverId}:`)) continue;
+      if (
+        !memberTag ||
+        !assignedRoleId ||
+        !allowedTags.has(memberTag) ||
+        !validRoleIds.has(assignedRoleId)
+      ) {
+        continue;
+      }
+      if (
+        (assignedRoleId === ownerRoleId && memberTag !== ownerTag) ||
+        (memberTag === ownerTag && assignedRoleId !== ownerRoleId)
+      ) {
+        return apiJson(
+          { error: "Kurucu rolü başka bir üyeye atanamaz veya kurucudan alınamaz." },
+          { status: 400 },
+        );
+      }
+      validatedAssignments.push({ memberTag, roleId: assignedRoleId });
+    }
+
+    await db.update(roles).set({ permissions: payload.permissions! }).where(eq(roles.id, roleId));
+    for (const assignment of validatedAssignments) {
       await db
         .insert(memberRoles)
         .values({
-          id: `${serverId}:${memberTag}`,
+          id: `${serverId}:${assignment.memberTag}`,
           serverId,
-          memberTag,
-          roleId: assignedRoleId,
+          memberTag: assignment.memberTag,
+          roleId: assignment.roleId,
           createdAt: new Date().toISOString(),
         })
         .onConflictDoUpdate({
           target: [memberRoles.serverId, memberRoles.memberTag],
-          set: { roleId: assignedRoleId },
+          set: { roleId: assignment.roleId },
         });
     }
-
-    return Response.json({ ok: true });
+    await writeAudit(profile.id, "roles.update", roleId, String(payload.permissions), serverId);
+    return apiJson({ ok: true });
   } catch (error) {
-    return Response.json(
-      { error: error instanceof Error ? error.message : "Yetkiler kaydedilemedi." },
-      { status: 500 },
-    );
+    return apiError(error);
   }
 }

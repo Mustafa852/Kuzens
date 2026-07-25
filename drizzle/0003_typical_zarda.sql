@@ -1,0 +1,1 @@
+ALTER TABLE `servers` ADD `owner_profile_id` text;

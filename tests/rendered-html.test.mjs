@@ -2,13 +2,39 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-const [appSource, appStyles, globalStyles, layoutSource, packageSource] =
+const [
+  appSource,
+  appStyles,
+  globalStyles,
+  layoutSource,
+  packageSource,
+  securitySource,
+  messagesRoute,
+  rtcRoute,
+  membersRoute,
+  rolesRoute,
+  invitesRoute,
+  friendsRoute,
+  serversRoute,
+  communitySource,
+  nextConfig,
+] =
   await Promise.all([
     readFile(new URL("../app/KuzensApp.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/kuzens.css", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
+    readFile(new URL("../lib/security.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/messages/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/rtc/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/members/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/roles/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/invites/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/friends/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/servers/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/community.ts", import.meta.url), "utf8"),
+    readFile(new URL("../next.config.ts", import.meta.url), "utf8"),
   ]);
 
 test("keeps the application fixed to the viewport", () => {
@@ -42,4 +68,37 @@ test("uses the finished Kuzens interface instead of starter content", () => {
   assert.match(appSource, /className="app-shell"/);
   assert.doesNotMatch(appSource, /SkeletonPreview|codex-preview/);
   assert.doesNotMatch(packageSource, /react-loading-skeleton/);
+});
+
+test("enforces server-side request and abuse protections", () => {
+  assert.match(securitySource, /assertTrustedMutation/);
+  assert.match(securitySource, /sec-fetch-site/);
+  assert.match(securitySource, /x-kuzens-request/);
+  assert.match(securitySource, /application\/json/);
+  assert.match(securitySource, /enforceRateLimit/);
+  assert.match(messagesRoute, /assertTrustedMutation\(request\)/);
+  assert.match(messagesRoute, /enforceRateLimit/);
+  for (const route of [membersRoute, rolesRoute, invitesRoute, friendsRoute, serversRoute]) {
+    assert.match(route, /assertTrustedMutation\(request\)/);
+    assert.match(route, /enforceRateLimit/);
+  }
+  assert.match(nextConfig, /Content-Security-Policy/);
+  assert.match(nextConfig, /frame-ancestors 'none'/);
+});
+
+test("keeps user content inert and realtime signals targeted", () => {
+  assert.doesNotMatch(appSource, /dangerouslySetInnerHTML|eval\(|new Function|Notification\./);
+  assert.match(rtcRoute, /recipientProfileId/);
+  assert.match(rtcRoute, /Kendine sinyal gönderemezsin/);
+  assert.match(rtcRoute, /Yalnızca aynı ses odasındaki üyeler/);
+  assert.doesNotMatch(rtcRoute, /recipientProfileId:\s*null/);
+});
+
+test("enforces scoped ownership, role hierarchy, and bans", () => {
+  assert.match(communitySource, /server\.ownerProfileId === profile\.id/);
+  assert.match(communitySource, /serverId === DEFAULT_SERVER_ID && profile\.isOwner/);
+  assert.match(membersRoute, /rolePosition\(target\) <= rolePosition\(profile\)/);
+  assert.match(membersRoute, /serverBans/);
+  assert.match(invitesRoute, /Bu topluluğa erişimin yasaklanmış/);
+  assert.match(rolesRoute, /Kurucu rolü başka bir üyeye atanamaz/);
 });
