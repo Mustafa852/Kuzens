@@ -22,6 +22,40 @@ type ChatMessage = {
 
 type Toast = { text: string; tone?: "success" | "danger" };
 
+type Profile = {
+  id: string;
+  displayName: string;
+  username: string;
+  isOwner: boolean;
+};
+
+type Role = {
+  id: string;
+  serverId: string;
+  name: string;
+  color: string;
+  permissions: number;
+  position: number;
+};
+
+type RoleAssignment = {
+  id: string;
+  serverId: string;
+  memberTag: string;
+  roleId: string;
+};
+
+const permissionOptions = [
+  { bit: 1, label: "Sunucuyu yönet", detail: "Sunucu adı ve genel ayarları" },
+  { bit: 2, label: "Odaları yönet", detail: "Oda oluşturma, düzenleme ve silme" },
+  { bit: 4, label: "Rolleri yönet", detail: "Rol ve üye yetkilerini değiştirme" },
+  { bit: 8, label: "Mesajları yönet", detail: "Mesaj silme ve sabitleme" },
+  { bit: 16, label: "Üyeleri uzaklaştır", detail: "Üyeyi sunucudan çıkarma" },
+  { bit: 32, label: "Üyeleri yasakla", detail: "Kalıcı erişim engeli uygulama" },
+  { bit: 64, label: "Ses odalarına katıl", detail: "Sesli odalara bağlanma" },
+  { bit: 128, label: "Ekran paylaş", detail: "Ses odasında ekran yayını açma" },
+];
+
 const fallbackChannels: Channel[] = [
   { id: "genel", serverId: "kuzens", name: "genel", kind: "text", position: 0 },
   { id: "oyun-gecesi", serverId: "kuzens", name: "oyun-gecesi", kind: "text", position: 1 },
@@ -144,12 +178,24 @@ export function KuzensApp() {
   const [newChannelKind, setNewChannelKind] = useState<"text" | "voice">("text");
   const [mobileChannels, setMobileChannels] = useState(false);
   const [loadingMessages, setLoadingMessages] = useState(false);
+  const [profile, setProfile] = useState<Profile | null | undefined>(undefined);
+  const [registrationName, setRegistrationName] = useState("");
+  const [registrationUsername, setRegistrationUsername] = useState("");
+  const [registrationError, setRegistrationError] = useState("");
+  const [registrationSubmitting, setRegistrationSubmitting] = useState(false);
+  const [roleItems, setRoleItems] = useState<Role[]>([]);
+  const [roleAssignments, setRoleAssignments] = useState<RoleAssignment[]>([]);
+  const [selectedRoleId, setSelectedRoleId] = useState("");
+  const [rolesLoading, setRolesLoading] = useState(false);
+  const [rolesSaving, setRolesSaving] = useState(false);
   const voiceStream = useRef<MediaStream | null>(null);
   const displayStream = useRef<MediaStream | null>(null);
   const previewVideo = useRef<HTMLVideoElement | null>(null);
   const messagesEnd = useRef<HTMLDivElement | null>(null);
 
   const selected = channels.find((channel) => channel.id === activeChannel) || channels[0];
+  const selectedRole = roleItems.find((role) => role.id === selectedRoleId);
+  const defaultMemberRoleId = roleItems.find((role) => role.id.endsWith(":member"))?.id || "";
   const textChannels = channels.filter((channel) => channel.kind === "text");
   const voiceChannels = channels.filter((channel) => channel.kind === "voice");
 
@@ -163,6 +209,24 @@ export function KuzensApp() {
           message.authorName.toLocaleLowerCase("tr-TR").includes(normalized)),
     );
   }, [activeChannel, messages, search]);
+
+  useEffect(() => {
+    fetch("/api/profile")
+      .then((response) => response.json())
+      .then((data: {
+        profile?: Profile | null;
+        identity?: { displayName?: string; suggestedUsername?: string };
+      }) => {
+        setProfile(data.profile ?? null);
+        setRegistrationName(data.identity?.displayName || "Savaş");
+        setRegistrationUsername(data.identity?.suggestedUsername || "savas");
+      })
+      .catch(() => {
+        setProfile(null);
+        setRegistrationName("Savaş");
+        setRegistrationUsername("savas");
+      });
+  }, []);
 
   useEffect(() => {
     fetch("/api/channels")
@@ -284,8 +348,8 @@ export function KuzensApp() {
     const optimistic: ChatMessage = {
       id: `local-${Date.now()}`,
       channelId: activeChannel,
-      authorName: "Savaş",
-      authorTag: "@savas",
+      authorName: profile?.displayName || "Savaş",
+      authorTag: `@${profile?.username || "savas"}`,
       content,
       createdAt: new Date().toISOString(),
     };
@@ -342,6 +406,119 @@ export function KuzensApp() {
     }
   }
 
+  async function registerProfile(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setRegistrationSubmitting(true);
+    setRegistrationError("");
+    const form = new FormData(event.currentTarget);
+
+    try {
+      const response = await fetch("/api/profile", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          displayName: registrationName,
+          username: registrationUsername,
+          birthConfirmed: form.get("birthConfirmed") === "on",
+          termsAccepted: form.get("termsAccepted") === "on",
+          noticeRead: form.get("noticeRead") === "on",
+          communityAccepted: form.get("communityAccepted") === "on",
+        }),
+      });
+      const data = (await response.json()) as { profile?: Profile; error?: string };
+      if (!response.ok || !data.profile) {
+        throw new Error(data.error || "Kayıt tamamlanamadı.");
+      }
+      setProfile(data.profile);
+      setToast({ text: "Kuzens hesabın hazır. Hoş geldin!", tone: "success" });
+    } catch (error) {
+      setRegistrationError(error instanceof Error ? error.message : "Kayıt tamamlanamadı.");
+    } finally {
+      setRegistrationSubmitting(false);
+    }
+  }
+
+  async function openRoles() {
+    setModal("roles");
+    setRolesLoading(true);
+    try {
+      const response = await fetch("/api/roles?server=kuzens");
+      const data = (await response.json()) as {
+        roles?: Role[];
+        assignments?: RoleAssignment[];
+      };
+      const nextRoles = data.roles || [];
+      setRoleItems(nextRoles);
+      setRoleAssignments(data.assignments || []);
+      setSelectedRoleId((current) => current || nextRoles[0]?.id || "");
+    } catch {
+      setToast({ text: "Yetkiler şu anda yüklenemedi.", tone: "danger" });
+    } finally {
+      setRolesLoading(false);
+    }
+  }
+
+  function toggleRolePermission(bit: number) {
+    setRoleItems((current) =>
+      current.map((role) => {
+        if (role.id !== selectedRoleId || role.id.endsWith(":owner")) return role;
+        return { ...role, permissions: role.permissions ^ bit };
+      }),
+    );
+  }
+
+  function updateMemberRole(memberTag: string, roleId: string) {
+    setRoleAssignments((current) => {
+      const existing = current.find((item) => item.memberTag === memberTag);
+      if (existing) {
+        return current.map((item) => (item.memberTag === memberTag ? { ...item, roleId } : item));
+      }
+      return [
+        ...current,
+        {
+          id: `kuzens:${memberTag}`,
+          serverId: "kuzens",
+          memberTag,
+          roleId,
+        },
+      ];
+    });
+  }
+
+  async function saveRoles() {
+    const selectedRole = roleItems.find((role) => role.id === selectedRoleId);
+    if (!selectedRole) return;
+    setRolesSaving(true);
+    try {
+      const response = await fetch("/api/roles", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          serverId: "kuzens",
+          roleId: selectedRole.id,
+          permissions: selectedRole.permissions,
+          assignments: members.map((member) => ({
+            memberTag: member.tag,
+            roleId:
+              roleAssignments.find((item) => item.memberTag === member.tag)?.roleId ||
+              roleItems.find((role) => role.id.endsWith(":member"))?.id,
+          })),
+        }),
+      });
+      const data = (await response.json()) as { error?: string };
+      if (!response.ok) throw new Error(data.error || "Yetkiler kaydedilemedi.");
+      setModal(null);
+      setToast({ text: "Rol ve üye yetkileri kaydedildi.", tone: "success" });
+    } catch (error) {
+      setToast({
+        text: error instanceof Error ? error.message : "Yetkiler kaydedilemedi.",
+        tone: "danger",
+      });
+    } finally {
+      setRolesSaving(false);
+    }
+  }
+
   async function copyInvite() {
     const invite = `${window.location.origin}/?davet=kuzens-7F2K`;
     try {
@@ -378,9 +555,9 @@ export function KuzensApp() {
           +
         </button>
         <div className="rail-spacer" />
-        <button className="rail-help" aria-label="Yardım">
+        <a className="rail-help" href="/hukuk" aria-label="Hukuk ve güven merkezi">
           ?
-        </button>
+        </a>
       </aside>
 
       <aside className={`channel-sidebar ${mobileChannels ? "mobile-open" : ""}`}>
@@ -389,14 +566,14 @@ export function KuzensApp() {
             <span className="eyebrow">TOPLULUK</span>
             <strong>Kuzens</strong>
           </div>
-          <button className="icon-button" aria-label="Sunucu menüsü" onClick={() => setModal("roles")}>
+          <button className="icon-button" aria-label="Sunucu menüsü" onClick={openRoles}>
             •••
           </button>
         </header>
 
         <div className="server-actions">
           <button onClick={copyInvite}><span>↗</span> Arkadaşlarını davet et</button>
-          <button onClick={() => setModal("roles")}><span>♢</span> Roller ve yetkiler</button>
+          <button onClick={openRoles}><span>♢</span> Roller ve yetkiler</button>
         </div>
 
         <nav className="channel-scroll" aria-label="Odalar">
@@ -456,11 +633,11 @@ export function KuzensApp() {
         )}
 
         <footer className="user-dock">
-          <Avatar name="Savaş" tone="purple" online />
-          <div><strong>Savaş</strong><small>@savas</small></div>
+          <Avatar name={profile?.displayName || "Savaş"} tone="purple" online />
+          <div><strong>{profile?.displayName || "Savaş"}</strong><small>@{profile?.username || "savas"}</small></div>
           <button className={muted ? "control-active" : ""} onClick={toggleMute} aria-label="Mikrofonu aç veya kapat">μ</button>
           <button className={deafened ? "control-active" : ""} onClick={() => setDeafened((value) => !value)} aria-label="Sesi aç veya kapat">◉</button>
-          <button aria-label="Ayarlar" onClick={() => setToast({ text: "Ayarlar bölümü sıradaki adımda." })}>⚙</button>
+          <a className="dock-link" href="/hukuk" aria-label="Hukuk ve güven merkezi">§</a>
         </footer>
       </aside>
 
@@ -480,10 +657,10 @@ export function KuzensApp() {
               <span>{voiceConnected ? "×" : "◖"}</span>{voiceConnected ? "Ayrıl" : "Sese katıl"}
             </button>
           ) : (
-            <>
-              <button className="header-action" aria-label="Bildirimler">♢<i /></button>
-              <button className="header-action" aria-label="Sabitlenenler">⌁</button>
-            </>
+            <div className="clear-actions">
+              <button onClick={copyInvite}>Davet et</button>
+              <button onClick={openRoles}>Yetkiler</button>
+            </div>
           )}
           <label className="search-box">
             <span>⌕</span>
@@ -674,14 +851,143 @@ export function KuzensApp() {
             <button className="modal-close" onClick={() => setModal(null)} aria-label="Kapat">×</button>
             <span className="eyebrow">YETKİ MERKEZİ</span>
             <h2>Roller ve yetkiler</h2>
-            <p>Rol sırası, üyelerin neleri yönetebileceğini belirler.</p>
-            <div className="role-list">
-              <div><i className="role-owner" /><span><strong>Kurucu</strong><small>Tüm yetkiler</small></span><b>1 üye</b></div>
-              <div><i className="role-mod" /><span><strong>Moderatör</strong><small>Mesaj ve üye yönetimi</small></span><b>2 üye</b></div>
-              <div><i className="role-member" /><span><strong>Kuzen</strong><small>Standart topluluk erişimi</small></span><b>5 üye</b></div>
-            </div>
-            <button className="primary-button" onClick={() => { setModal(null); setToast({ text: "Yetki editörü sıradaki geliştirme adımında." }); }}>Yetkileri düzenle</button>
+            <p>Bir rol seç, izinleri açıp kapat ve üyeye rol ata. Değişiklikler kalıcı olarak kaydedilir.</p>
+            {rolesLoading ? (
+              <div className="roles-loading">Yetkiler yükleniyor…</div>
+            ) : (
+              <div className="permission-workspace">
+                <div className="role-tabs" role="tablist" aria-label="Roller">
+                  {roleItems.map((role) => (
+                    <button
+                      key={role.id}
+                      className={selectedRoleId === role.id ? "active" : ""}
+                      onClick={() => setSelectedRoleId(role.id)}
+                      role="tab"
+                      aria-selected={selectedRoleId === role.id}
+                    >
+                      <i style={{ background: role.color }} />
+                      <span>{role.name}<small>{role.id.endsWith(":owner") ? "Sabit tam yetki" : "Düzenlenebilir"}</small></span>
+                    </button>
+                  ))}
+                </div>
+
+                <div className="permission-panel">
+                  <div className="permission-heading">
+                    <div>
+                      <strong>{selectedRole?.name || "Rol seç"}</strong>
+                      <span>{selectedRole?.id.endsWith(":owner") ? "Kurucu izinleri güvenlik için kilitlidir." : "Bu role verilen izinler"}</span>
+                    </div>
+                    <b>{selectedRole ? permissionOptions.filter((item) => (selectedRole.permissions & item.bit) !== 0).length : 0}/8 açık</b>
+                  </div>
+                  <div className="permission-list">
+                    {permissionOptions.map((permission) => {
+                      const checked = Boolean(selectedRole && (selectedRole.permissions & permission.bit));
+                      const locked = Boolean(selectedRole?.id.endsWith(":owner"));
+                      return (
+                        <label key={permission.bit} className={locked ? "locked" : ""}>
+                          <span><strong>{permission.label}</strong><small>{permission.detail}</small></span>
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            disabled={locked || !selectedRole}
+                            onChange={() => toggleRolePermission(permission.bit)}
+                          />
+                          <i />
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="member-role-panel">
+                  <div className="permission-heading">
+                    <div><strong>Üye rolleri</strong><span>Her üyenin temel rolünü seç.</span></div>
+                  </div>
+                  <div className="member-role-grid">
+                    {members.map((member) => (
+                      <label key={member.tag}>
+                        <span><Avatar name={member.name} tone={member.tone} size="sm" /><b>{member.name}</b></span>
+                        <select
+                          value={roleAssignments.find((item) => item.memberTag === member.tag)?.roleId || defaultMemberRoleId}
+                          onChange={(event) => updateMemberRole(member.tag, event.target.value)}
+                        >
+                          {roleItems.map((role) => (
+                            <option key={role.id} value={role.id}>{role.name}</option>
+                          ))}
+                        </select>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+            {!profile?.isOwner && !rolesLoading && (
+              <p className="owner-note">Bu ayarları yalnızca ilk kayıt olan Kurucu hesabı değiştirebilir.</p>
+            )}
+            <button className="primary-button" disabled={rolesLoading || rolesSaving || !profile?.isOwner} onClick={saveRoles}>
+              {rolesSaving ? "Kaydediliyor…" : "Değişiklikleri kaydet"}
+            </button>
           </section>
+        </div>
+      )}
+
+      {profile === undefined && (
+        <div className="registration-gate loading">
+          <div className="registration-loader"><span>K.</span><p>Hesabın hazırlanıyor…</p></div>
+        </div>
+      )}
+
+      {profile === null && (
+        <div className="registration-gate">
+          <div className="registration-card">
+            <aside className="registration-brand">
+              <span className="registration-logo">K.</span>
+              <div>
+                <span className="eyebrow">KUZENS’E HOŞ GELDİN</span>
+                <h2>Birlikte kalmanın en kolay yolu.</h2>
+                <p>Bir hesap, tüm odaların ve toplulukların için yeterli.</p>
+              </div>
+              <ul>
+                <li><i>1</i> Adını ve kullanıcı adını seç</li>
+                <li><i>2</i> Açık kuralları incele</li>
+                <li><i>3</i> Sohbete hemen katıl</li>
+              </ul>
+            </aside>
+            <form className="registration-form" onSubmit={registerProfile}>
+              <div className="registration-title">
+                <span>ÜCRETSİZ HESAP</span>
+                <h1>Kuzens hesabını oluştur</h1>
+                <p>Şifre istemiyoruz; güvenli giriş mevcut doğrulanmış hesabın üzerinden yapılır.</p>
+              </div>
+              <label>
+                GÖRÜNEN AD
+                <input
+                  required
+                  minLength={2}
+                  maxLength={32}
+                  value={registrationName}
+                  onChange={(event) => setRegistrationName(event.target.value)}
+                  placeholder="Sana nasıl hitap edelim?"
+                />
+              </label>
+              <label>
+                KULLANICI ADI
+                <div className="username-field"><span>@</span><input required minLength={3} maxLength={24} pattern="[a-z0-9_]+" value={registrationUsername} onChange={(event) => setRegistrationUsername(event.target.value.toLocaleLowerCase("en-US").replace(/[^a-z0-9_]/g, ""))} /></div>
+                <small>Yalnızca küçük harf, rakam ve alt çizgi.</small>
+              </label>
+              <div className="legal-checks">
+                <label><input name="birthConfirmed" type="checkbox" required /><i /><span>18 yaşını doldurduğumu doğruluyorum.</span></label>
+                <label><input name="termsAccepted" type="checkbox" required /><i /><span><a href="/hukuk/kullanim-kosullari" target="_blank">Kullanım Koşulları</a>nı kabul ediyorum.</span></label>
+                <label><input name="communityAccepted" type="checkbox" required /><i /><span><a href="/hukuk/topluluk-kurallari" target="_blank">Topluluk Kuralları</a>nı kabul ediyorum.</span></label>
+                <label><input name="noticeRead" type="checkbox" required /><i /><span><a href="/hukuk/aydinlatma" target="_blank">KVKK Aydınlatma Metni</a>ni okudum. Bu bir açık rıza beyanı değildir.</span></label>
+              </div>
+              {registrationError && <div className="registration-error">{registrationError}</div>}
+              <button className="registration-submit" disabled={registrationSubmitting}>
+                {registrationSubmitting ? "Hesabın oluşturuluyor…" : "Hesabı oluştur ve devam et"}
+              </button>
+              <p className="registration-foot">Gizliliğini nasıl koruduğumuzu <a href="/hukuk/gizlilik" target="_blank">Gizlilik Politikası</a>nda anlatıyoruz.</p>
+            </form>
+          </div>
         </div>
       )}
 

@@ -104,6 +104,7 @@
   height: 34px;
   border-radius: 11px;
   font-size: 13px;
+  text-decoration: none;
 }
 
 .channel-sidebar {
@@ -375,7 +376,8 @@
   font-size: 9px;
 }
 
-.user-dock button {
+.user-dock button,
+.user-dock .dock-link {
   display: grid;
   width: 25px;
   height: 25px;
@@ -384,9 +386,11 @@
   background: transparent;
   color: #7f788a;
   font-size: 12px;
+  text-decoration: none;
 }
 
 .user-dock button:hover,
+.user-dock .dock-link:hover,
 .user-dock button.control-active {
   background: #25212d;
   color: #fff;
@@ -501,6 +505,27 @@
   height: 4px;
   border-radius: 50%;
   background: var(--coral);
+}
+
+.clear-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.clear-actions button {
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.035);
+  color: #9992a3;
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.clear-actions button:hover {
+  border-color: rgba(156, 124, 255, 0.28);
+  background: rgba(156, 124, 255, 0.09);
+  color: #d7ccff;
 }
 
 .search-box {
@@ -1459,6 +1484,530 @@
   font-weight: 500;
 }
 
+.role-modal {
+  width: min(820px, calc(100vw - 30px));
+  max-height: min(760px, calc(100dvh - 30px));
+  overflow-y: auto;
+}
+
+.roles-loading {
+  display: grid;
+  min-height: 250px;
+  place-items: center;
+  color: #7c7585;
+  font-size: 11px;
+}
+
+.permission-workspace {
+  display: grid;
+  grid-template-columns: 180px minmax(0, 1fr);
+  gap: 12px;
+  margin-bottom: 15px;
+}
+
+.role-tabs {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.role-tabs > button {
+  display: grid;
+  grid-template-columns: 9px minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+  padding: 10px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: #1f1c26;
+  color: #918a9a;
+  text-align: left;
+}
+
+.role-tabs > button.active {
+  border-color: rgba(156, 124, 255, 0.3);
+  background: rgba(156, 124, 255, 0.1);
+  color: #fff;
+}
+
+.role-tabs i {
+  width: 8px;
+  height: 8px;
+  border-radius: 3px;
+}
+
+.role-tabs span {
+  display: grid;
+  gap: 2px;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.role-tabs small {
+  color: #6e6876;
+  font-size: 7px;
+  font-weight: 500;
+}
+
+.permission-panel,
+.member-role-panel {
+  padding: 13px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #17151e;
+}
+
+.permission-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 11px;
+}
+
+.permission-heading > div {
+  display: grid;
+  gap: 2px;
+}
+
+.permission-heading strong {
+  font-size: 11px;
+}
+
+.permission-heading span,
+.permission-heading b {
+  color: #746e7c;
+  font-size: 8px;
+  font-weight: 550;
+}
+
+.permission-heading b {
+  padding: 4px 7px;
+  border-radius: 7px;
+  background: rgba(156, 124, 255, 0.1);
+  color: #af9bff;
+}
+
+.permission-list {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 5px;
+}
+
+.permission-list label {
+  position: relative;
+  display: flex;
+  min-height: 48px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 9px;
+  border-radius: 9px;
+  background: #1e1b25;
+  cursor: pointer;
+}
+
+.permission-list label.locked {
+  cursor: not-allowed;
+  opacity: 0.68;
+}
+
+.permission-list label > span {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.permission-list strong {
+  font-size: 9px;
+}
+
+.permission-list small {
+  overflow: hidden;
+  color: #686271;
+  font-size: 7px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.permission-list input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.permission-list label > i {
+  position: relative;
+  width: 28px;
+  height: 16px;
+  flex: 0 0 auto;
+  border-radius: 10px;
+  background: #35303d;
+  transition: 150ms ease;
+}
+
+.permission-list label > i::after {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #8b8493;
+  content: "";
+  transition: 150ms ease;
+}
+
+.permission-list input:checked + i {
+  background: rgba(156, 124, 255, 0.45);
+}
+
+.permission-list input:checked + i::after {
+  left: 15px;
+  background: #c5b7ff;
+}
+
+.member-role-panel {
+  grid-column: 1 / -1;
+}
+
+.member-role-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.member-role-grid > label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 7px;
+  padding: 7px;
+  border-radius: 9px;
+  background: #1e1b25;
+}
+
+.member-role-grid label > span {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.member-role-grid b {
+  overflow: hidden;
+  font-size: 8px;
+  text-overflow: ellipsis;
+}
+
+.member-role-grid select {
+  max-width: 90px;
+  padding: 5px 6px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  outline: none;
+  background: #121018;
+  color: #9e96a8;
+  font-size: 7px;
+}
+
+.owner-note {
+  margin: -5px 0 12px !important;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(255, 209, 102, 0.06);
+  color: #a39672 !important;
+}
+
+.registration-gate {
+  z-index: 50;
+  position: fixed;
+  inset: 0;
+  display: grid;
+  overflow-y: auto;
+  padding: 24px;
+  place-items: center;
+  background:
+    radial-gradient(circle at 15% 10%, rgba(156, 124, 255, 0.2), transparent 30%),
+    rgba(7, 6, 10, 0.96);
+  backdrop-filter: blur(18px);
+}
+
+.registration-gate.loading {
+  background: #0d0c12;
+}
+
+.registration-loader {
+  display: grid;
+  place-items: center;
+  color: #7f7888;
+}
+
+.registration-loader span {
+  display: grid;
+  width: 60px;
+  height: 60px;
+  place-items: center;
+  border-radius: 19px;
+  background: linear-gradient(145deg, #a582ff, #6545d7);
+  color: #fff;
+  font-size: 24px;
+  font-weight: 850;
+  box-shadow: 0 18px 45px rgba(101, 69, 215, 0.35);
+}
+
+.registration-loader p {
+  margin-top: 14px;
+  font-size: 10px;
+}
+
+.registration-card {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.85fr) minmax(360px, 1.15fr);
+  overflow: hidden;
+  width: min(920px, 100%);
+  min-height: 600px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 24px;
+  background: #17151e;
+  box-shadow: 0 40px 120px rgba(0, 0, 0, 0.58);
+}
+
+.registration-brand {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: clamp(28px, 5vw, 52px);
+  background:
+    radial-gradient(circle at 20% 20%, rgba(255, 119, 107, 0.16), transparent 23%),
+    radial-gradient(circle at 80% 75%, rgba(91, 227, 154, 0.12), transparent 24%),
+    linear-gradient(145deg, #211a35, #111019);
+}
+
+.registration-logo {
+  display: grid;
+  width: 50px;
+  height: 50px;
+  place-items: center;
+  border-radius: 16px;
+  background: linear-gradient(145deg, #ad8cff, #6e4eff);
+  font-size: 20px;
+  font-weight: 850;
+}
+
+.registration-brand h2 {
+  max-width: 340px;
+  margin: 13px 0 9px;
+  font-size: clamp(28px, 4vw, 43px);
+  line-height: 1.02;
+  letter-spacing: -0.055em;
+}
+
+.registration-brand p {
+  max-width: 330px;
+  margin: 0;
+  color: #90899b;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.registration-brand ul {
+  display: grid;
+  gap: 12px;
+  margin: 34px 0 0;
+  padding: 0;
+  list-style: none;
+  color: #aca5b5;
+  font-size: 10px;
+}
+
+.registration-brand li {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.registration-brand li i {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border: 1px solid rgba(156, 124, 255, 0.3);
+  border-radius: 7px;
+  background: rgba(156, 124, 255, 0.1);
+  color: #b5a3ff;
+  font-size: 8px;
+  font-style: normal;
+}
+
+.registration-form {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: clamp(28px, 5vw, 52px);
+  background: #17151e;
+}
+
+.registration-title > span {
+  color: #9c7cff;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.15em;
+}
+
+.registration-title h1 {
+  margin: 8px 0 5px;
+  font-size: 25px;
+  letter-spacing: -0.04em;
+}
+
+.registration-title p {
+  margin: 0 0 22px;
+  color: #777080;
+  font-size: 9px;
+  line-height: 1.5;
+}
+
+.registration-form > label {
+  display: grid;
+  gap: 7px;
+  margin-bottom: 14px;
+  color: #777080;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.11em;
+}
+
+.registration-form > label > input,
+.username-field {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #0f0e14;
+}
+
+.registration-form > label > input {
+  padding: 11px;
+  outline: 0;
+  color: #eeeaf4;
+}
+
+.username-field {
+  display: flex;
+  align-items: center;
+  padding: 0 11px;
+}
+
+.username-field span {
+  color: #6e6877;
+  font-size: 13px;
+}
+
+.username-field input {
+  min-width: 0;
+  flex: 1;
+  padding: 11px 6px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: #eeeaf4;
+}
+
+.registration-form > label > input:focus,
+.username-field:focus-within {
+  border-color: rgba(156, 124, 255, 0.45);
+}
+
+.registration-form > label small {
+  color: #5e5866;
+  font-size: 7px;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+.legal-checks {
+  display: grid;
+  gap: 8px;
+  margin: 4px 0 16px;
+}
+
+.legal-checks label {
+  position: relative;
+  display: grid;
+  grid-template-columns: 17px minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+  color: #85808d;
+  cursor: pointer;
+  font-size: 8px;
+  line-height: 1.45;
+}
+
+.legal-checks input {
+  position: absolute;
+  opacity: 0;
+}
+
+.legal-checks i {
+  display: grid;
+  width: 16px;
+  height: 16px;
+  place-items: center;
+  border: 1px solid #3c3745;
+  border-radius: 5px;
+  background: #0f0e14;
+}
+
+.legal-checks input:checked + i {
+  border-color: #9c7cff;
+  background: #8b69ef;
+}
+
+.legal-checks input:checked + i::after {
+  color: #fff;
+  content: "✓";
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 800;
+}
+
+.legal-checks a,
+.registration-foot a {
+  color: #b7a4ff;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.registration-submit {
+  padding: 12px;
+  border-radius: 10px;
+  background: linear-gradient(145deg, #a582ff, #7453e7);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 800;
+  box-shadow: 0 10px 22px rgba(104, 72, 211, 0.25);
+}
+
+.registration-submit:disabled {
+  opacity: 0.5;
+}
+
+.registration-error {
+  margin-bottom: 10px;
+  padding: 9px 10px;
+  border-radius: 8px;
+  background: rgba(255, 119, 107, 0.09);
+  color: #ff9188;
+  font-size: 8px;
+}
+
+.registration-foot {
+  margin: 11px 0 0;
+  color: #5f5967;
+  font-size: 7px;
+  text-align: center;
+}
+
 .toast {
   z-index: 30;
   position: fixed;
@@ -1620,6 +2169,60 @@
 
   .voice-controls button {
     flex: 1 1 42%;
+  }
+}
+
+@media (max-width: 760px) {
+  .clear-actions button {
+    padding-inline: 8px;
+  }
+
+  .role-modal {
+    max-height: calc(100dvh - 18px);
+    padding: 22px 16px;
+  }
+
+  .permission-workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .role-tabs {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .permission-list,
+  .member-role-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .registration-gate {
+    align-items: start;
+    padding: 10px;
+  }
+
+  .registration-card {
+    grid-template-columns: 1fr;
+    min-height: 0;
+    border-radius: 18px;
+  }
+
+  .registration-brand {
+    min-height: 235px;
+    padding: 24px;
+  }
+
+  .registration-brand h2 {
+    max-width: 520px;
+    font-size: 30px;
+  }
+
+  .registration-brand ul {
+    display: none;
+  }
+
+  .registration-form {
+    padding: 25px 22px 28px;
   }
 }
 
