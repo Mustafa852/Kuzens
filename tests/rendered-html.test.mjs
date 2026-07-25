@@ -93,7 +93,9 @@ test("scrolls messages inside their own panel", () => {
   );
   assert.match(appSource, /const messageList = useRef<HTMLDivElement \| null>/);
   assert.match(appSource, /list\.scrollTo\(\{[\s\S]*?top:\s*list\.scrollHeight/);
-  assert.match(appSource, /className="message-list" ref=\{messageList\}/);
+  assert.match(appSource, /className="message-list"[\s\S]{0,80}ref=\{messageList\}/);
+  assert.match(appSource, /stickToLatest/);
+  assert.match(appSource, /className="jump-latest"/);
   assert.doesNotMatch(appSource, /messagesEnd\.current\?\.scrollIntoView/);
 });
 
@@ -162,6 +164,9 @@ test("provides app-like context actions, mentions, reactions, and profile settin
   assert.match(appSource, /inline-mention/);
   assert.match(appSource, /toggleReaction/);
   assert.match(appSource, /profile-settings-modal/);
+  assert.match(appSource, /isSpotify/);
+  assert.match(appSource, /isTwitch/);
+  assert.match(appSource, /isGitHub/);
   assert.match(messagesRoute, /@everyone ve @here yalnızca yetkili/);
   assert.match(messagesRoute, /messageMentions/);
   assert.match(reactionsRoute, /ALLOWED_REACTIONS/);
@@ -217,8 +222,13 @@ test("supports advanced search, accessibility controls, and push-to-talk", () =>
   assert.match(appSource, /kuzens-drafts/);
   assert.match(appSource, /preferences\.pushToTalk/);
   assert.match(appSource, /event\.code === "Space"/);
+  assert.match(appSource, /event\.altKey/);
+  assert.match(appSource, /CTRL \/ ⌘ \+ SHIFT \+ M/);
+  assert.match(appSource, /event\.key === "Escape"/);
+  assert.match(appSource, /aria-live=/);
   assert.match(appStyles, /\.app-shell\.high-contrast/);
   assert.match(appStyles, /\.app-shell\.reduce-motion/);
+  assert.match(appStyles, /:focus-visible/);
 });
 
 test("separates channel notifications from unread indicators", () => {
@@ -283,6 +293,7 @@ test("treats user blocks as a channel, notification, and DM boundary", () => {
   assert.match(notificationsRoute, /blockedProfileIds/);
   assert.match(directMessagesRoute, /requireConversationUnblocked/);
   assert.match(directMessagesRoute, /blockedProfileIds/);
+  assert.match(threadsRoute, /blockedProfileIds/);
   assert.match(appSource, /blocked-message-reveal/);
 });
 
@@ -309,6 +320,7 @@ test("keeps message threads persistent, scoped, and moderation-aware", () => {
   assert.match(messagesRoute, /replyCount/);
   assert.match(appSource, /className="thread-chip"/);
   assert.match(appSource, /className="modal-card thread-modal"/);
+  assert.match(appSource, /threadDraftKey/);
 });
 
 test("supports accessible channel ordering, favorites, and complete deletion cleanup", () => {

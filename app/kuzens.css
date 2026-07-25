@@ -912,6 +912,30 @@
     linear-gradient(145deg, #17314c, #0a1524);
 }
 
+.embed-art.spotify {
+  background:
+    radial-gradient(circle at 70% 20%, rgba(64, 255, 137, 0.42), transparent 34%),
+    linear-gradient(145deg, #123c25, #08180f);
+}
+
+.embed-art.twitch {
+  background:
+    radial-gradient(circle at 65% 25%, rgba(172, 109, 255, 0.48), transparent 34%),
+    linear-gradient(145deg, #382064, #160d2b);
+}
+
+.embed-art.github {
+  background:
+    radial-gradient(circle at 68% 22%, rgba(168, 181, 199, 0.24), transparent 38%),
+    linear-gradient(145deg, #202833, #0d1117);
+}
+
+.embed-art.web {
+  background:
+    radial-gradient(circle at 65% 20%, rgba(139, 105, 255, 0.34), transparent 36%),
+    linear-gradient(145deg, #2d2444, #12101a);
+}
+
 .embed-art > span {
   z-index: 1;
   display: grid;
@@ -1007,6 +1031,30 @@
 .composer-wrap {
   flex: 0 0 auto;
   padding: 0 18px 17px;
+}
+
+.jump-latest {
+  z-index: 6;
+  position: absolute;
+  right: 22px;
+  bottom: 82px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 10px;
+  border: 1px solid rgba(156, 124, 255, 0.42);
+  border-radius: 999px;
+  background: rgba(30, 25, 39, 0.96);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.38);
+  color: #d5c8fa;
+  font-size: 9px;
+  font-weight: 800;
+  backdrop-filter: blur(12px);
+}
+
+.jump-latest span {
+  color: #ad89ff;
+  font-size: 12px;
 }
 
 .reply-hint {
@@ -2833,6 +2881,43 @@
   background: #fff;
 }
 
+.shortcut-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.shortcut-list > div {
+  display: flex;
+  min-width: 0;
+  min-height: 42px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 10px;
+  border: 1px solid #2a2531;
+  border-radius: 9px;
+  background: #100e14;
+}
+
+.shortcut-list span {
+  color: #a9a1b2;
+  font-size: 9px;
+}
+
+.shortcut-list kbd {
+  flex: 0 0 auto;
+  padding: 4px 6px;
+  border: 1px solid #40364d;
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  background: #19151f;
+  color: #c5b7d7;
+  font-family: inherit;
+  font-size: 7px;
+  font-weight: 850;
+}
+
 .ptt-preview {
   display: flex;
   align-items: center;
@@ -4554,6 +4639,10 @@
 }
 
 @media (max-width: 760px) {
+  .shortcut-list {
+    grid-template-columns: 1fr;
+  }
+
   .app-shell {
     grid-template-columns: 58px minmax(0, 1fr);
     min-height: 540px;
@@ -4839,6 +4928,11 @@
     scroll-behavior: auto !important;
     transition: none !important;
   }
+}
+
+:where(button, a, input, textarea, select, [tabindex]):focus-visible {
+  outline: 2px solid #b18cff;
+  outline-offset: 2px;
 }
 
 /* Etkinlik merkezi */
@@ -6089,6 +6183,20 @@
   right: 5px;
   color: #d77f91;
   background: transparent;
+}
+
+.thread-reply > .blocked-message-reveal {
+  position: static;
+  grid-column: 1 / -1;
+  justify-content: space-between;
+  width: 100%;
+  color: #817a89;
+  background: #151219;
+}
+
+.thread-parent > .blocked-message-reveal {
+  justify-content: space-between;
+  width: 100%;
 }
 
 .thread-reply p.deleted {

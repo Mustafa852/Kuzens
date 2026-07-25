@@ -1,6 +1,7 @@
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, or } from "drizzle-orm";
 import {
   channels,
+  friendships,
   messages,
   messageThreads,
   profiles,
@@ -66,23 +67,47 @@ export async function GET(request: Request) {
       .from(messages)
       .where(eq(messages.id, row.thread.parentMessageId))
       .limit(1);
-    const replies = await db
-      .select({
-        id: threadMessages.id,
-        threadId: threadMessages.threadId,
-        authorProfileId: threadMessages.authorProfileId,
-        authorName: profiles.displayName,
-        authorUsername: profiles.username,
-        content: threadMessages.content,
-        editedAt: threadMessages.editedAt,
-        deletedAt: threadMessages.deletedAt,
-        createdAt: threadMessages.createdAt,
-      })
-      .from(threadMessages)
-      .innerJoin(profiles, eq(threadMessages.authorProfileId, profiles.id))
-      .where(eq(threadMessages.threadId, threadId))
-      .orderBy(asc(threadMessages.createdAt))
-      .limit(500);
+    const [replies, blockedRows] = await Promise.all([
+      db
+        .select({
+          id: threadMessages.id,
+          threadId: threadMessages.threadId,
+          authorProfileId: threadMessages.authorProfileId,
+          authorName: profiles.displayName,
+          authorUsername: profiles.username,
+          content: threadMessages.content,
+          editedAt: threadMessages.editedAt,
+          deletedAt: threadMessages.deletedAt,
+          createdAt: threadMessages.createdAt,
+        })
+        .from(threadMessages)
+        .innerJoin(profiles, eq(threadMessages.authorProfileId, profiles.id))
+        .where(eq(threadMessages.threadId, threadId))
+        .orderBy(asc(threadMessages.createdAt))
+        .limit(500),
+      db
+        .select({
+          requesterProfileId: friendships.requesterProfileId,
+          addresseeProfileId: friendships.addresseeProfileId,
+        })
+        .from(friendships)
+        .where(
+          and(
+            eq(friendships.status, "blocked"),
+            or(
+              eq(friendships.requesterProfileId, profile.id),
+              eq(friendships.addresseeProfileId, profile.id),
+            ),
+          ),
+        ),
+    ]);
+    const blockedProfileIds = new Set(
+      blockedRows.map((item) =>
+        item.requesterProfileId === profile.id
+          ? item.addresseeProfileId
+          : item.requesterProfileId,
+      ),
+    );
     const permissions = await permissionsFor(profile, row.thread.serverId);
     return apiJson({
       thread: {
@@ -95,10 +120,17 @@ export async function GET(request: Request) {
               authorTag: parent.authorTag,
               content: parent.deletedAt ? "Bu mesaj silindi." : parent.content,
               createdAt: parent.createdAt,
+              blockedAuthor: Boolean(
+                parent.authorProfileId &&
+                  blockedProfileIds.has(parent.authorProfileId),
+              ),
             }
           : null,
       },
-      replies,
+      replies: replies.map((reply) => ({
+        ...reply,
+        blockedAuthor: blockedProfileIds.has(reply.authorProfileId),
+      })),
       canManage:
         row.thread.creatorProfileId === profile.id ||
         (permissions & PERMISSIONS.manageMessages) !== 0,

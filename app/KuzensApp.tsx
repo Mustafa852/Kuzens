@@ -69,6 +69,7 @@ type ThreadDetail = {
     authorTag: string;
     content: string;
     createdAt: string;
+    blockedAuthor?: boolean;
   } | null;
 };
 
@@ -81,6 +82,7 @@ type ThreadReply = {
   content: string;
   editedAt?: string | null;
   deletedAt?: string | null;
+  blockedAuthor?: boolean;
   createdAt: string;
 };
 
@@ -568,7 +570,20 @@ function LinkEmbed({ content }: { content: string }) {
   }
   const isYouTube = /(^|\.)youtube\.com$|(^|\.)youtu\.be$/i.test(url.hostname);
   const isSteam = /(^|\.)steampowered\.com$|(^|\.)steamcommunity\.com$/i.test(url.hostname);
-  if (!isYouTube && !isSteam) return null;
+  const isSpotify = /(^|\.)spotify\.com$/i.test(url.hostname);
+  const isTwitch = /(^|\.)twitch\.tv$/i.test(url.hostname);
+  const isGitHub = /(^|\.)github\.com$/i.test(url.hostname);
+  const provider = isYouTube
+    ? "youtube"
+    : isSteam
+      ? "steam"
+      : isSpotify
+        ? "spotify"
+        : isTwitch
+          ? "twitch"
+          : isGitHub
+            ? "github"
+            : "web";
   const youtubeId = isYouTube
     ? url.hostname.includes("youtu.be")
       ? url.pathname.split("/")[1]
@@ -580,20 +595,55 @@ function LinkEmbed({ content }: { content: string }) {
     : steamId
       ? `https://cdn.akamai.steamstatic.com/steam/apps/${steamId}/header.jpg`
       : null;
+  const pathParts = url.pathname.split("/").filter(Boolean).slice(0, 3);
+  const source =
+    provider === "web" ? url.hostname.replace(/^www\./, "") : provider.toUpperCase();
+  const icon =
+    provider === "youtube"
+      ? "▶"
+      : provider === "steam"
+        ? "STEAM"
+        : provider === "spotify"
+          ? "♫"
+          : provider === "twitch"
+            ? "LIVE"
+            : provider === "github"
+              ? "GIT"
+              : "↗";
+  const title =
+    provider === "youtube"
+      ? "YouTube videosu"
+      : provider === "steam"
+        ? steamId
+          ? `Steam oyunu · #${steamId}`
+          : "Steam içeriği"
+        : provider === "spotify"
+          ? "Spotify paylaşımı"
+          : provider === "twitch"
+            ? pathParts[0]
+              ? `${pathParts[0]} canlı yayın bağlantısı`
+              : "Twitch yayını"
+            : provider === "github"
+              ? pathParts.slice(0, 2).join(" / ") || "GitHub bağlantısı"
+              : url.hostname.replace(/^www\./, "");
+  const description =
+    provider === "web"
+      ? `${url.pathname === "/" ? "Ana sayfa" : url.pathname.slice(0, 90)} · bağlantıyı yeni sekmede aç`
+      : "Kuzens içinde güvenli bağlantı önizlemesi";
 
   return (
     <a className="link-embed" href={url.toString()} target="_blank" rel="noreferrer noopener">
       <div
-        className={`embed-art ${isYouTube ? "youtube" : "steam"}`}
+        className={`embed-art ${provider}`}
         style={imageUrl ? { backgroundImage: `linear-gradient(145deg, rgba(0,0,0,.12), rgba(0,0,0,.58)), url("${imageUrl}")` } : undefined}
       >
-        <span>{isYouTube ? "▶" : "STEAM"}</span>
+        <span>{icon}</span>
         <div className="embed-art-glow" />
       </div>
       <div className="embed-copy">
-        <span className="embed-source">{isYouTube ? "YOUTUBE" : "STEAM"}</span>
-        <strong>{isYouTube ? "Oyun Gecesi — takım hazır mı?" : "Haftanın birlikte oynananları"}</strong>
-        <p>{isYouTube ? "Kuzens topluluğundan paylaşılan video" : "Topluluğun konuştuğu oyun ve içerikler"}</p>
+        <span className="embed-source">{source}</span>
+        <strong>{title}</strong>
+        <p>{description}</p>
       </div>
     </a>
   );
@@ -706,6 +756,7 @@ export function KuzensApp() {
   const [draft, setDraft] = useState("");
   const [search, setSearch] = useState("");
   const [searchFocused, setSearchFocused] = useState(false);
+  const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [replyingTo, setReplyingTo] = useState<ChatMessage | null>(null);
   const [voiceConnected, setVoiceConnected] = useState(false);
   const [connectedVoiceChannelId, setConnectedVoiceChannelId] = useState<string | null>(null);
@@ -827,6 +878,7 @@ export function KuzensApp() {
   const [activeThread, setActiveThread] = useState<ThreadDetail | null>(null);
   const [threadReplies, setThreadReplies] = useState<ThreadReply[]>([]);
   const [threadDraft, setThreadDraft] = useState("");
+  const [threadDraftLoadedKey, setThreadDraftLoadedKey] = useState("");
   const [threadLoading, setThreadLoading] = useState(false);
   const [threadCanManage, setThreadCanManage] = useState(false);
   const [favoriteChannelIds, setFavoriteChannelIds] = useState<Set<string>>(
@@ -846,6 +898,7 @@ export function KuzensApp() {
   const displayStream = useRef<MediaStream | null>(null);
   const previewVideo = useRef<HTMLVideoElement | null>(null);
   const messageList = useRef<HTMLDivElement | null>(null);
+  const stickToLatest = useRef(true);
   const searchInput = useRef<HTMLInputElement | null>(null);
   const directMessageList = useRef<HTMLDivElement | null>(null);
   const preferencesReady = useRef(false);
@@ -874,6 +927,7 @@ export function KuzensApp() {
   const bookmarkReminderCount = savedMessages.filter((item) => item.reminderDue).length;
   const channelDraftKey = `channel:${activeServerId}:${activeChannel}`;
   const directDraftKey = `direct:${activeDirectConversationId || "none"}`;
+  const threadDraftKey = `thread:${activeThread?.id || "none"}`;
   const activeServer =
     servers.find((server) => server.id === activeServerId) ||
     ({ id: "kuzens", name: "Kuzens", icon: "KZ" } satisfies CommunityServer);
@@ -1151,12 +1205,22 @@ export function KuzensApp() {
   }, [activeServerId, profile]);
 
   useEffect(() => {
+    stickToLatest.current = true;
+    window.queueMicrotask(() => setShowJumpToLatest(false));
+  }, [activeChannel]);
+
+  useEffect(() => {
     const list = messageList.current;
     if (!list) return;
+    if (!stickToLatest.current) {
+      window.queueMicrotask(() => setShowJumpToLatest(true));
+      return;
+    }
     list.scrollTo({
       top: list.scrollHeight,
       behavior: "smooth",
     });
+    window.queueMicrotask(() => setShowJumpToLatest(false));
   }, [visibleMessages.length]);
 
   useEffect(() => {
@@ -1436,6 +1500,37 @@ export function KuzensApp() {
   }, [directDraft, directDraftKey, directDraftLoadedKey]);
 
   useEffect(() => {
+    let cancelled = false;
+    let saved: Record<string, string> = {};
+    try {
+      saved = JSON.parse(localStorage.getItem("kuzens-drafts") || "{}");
+    } catch {
+      saved = {};
+    }
+    window.queueMicrotask(() => {
+      if (cancelled) return;
+      setThreadDraft(saved[threadDraftKey] || "");
+      setThreadDraftLoadedKey(threadDraftKey);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [threadDraftKey]);
+
+  useEffect(() => {
+    if (threadDraftLoadedKey !== threadDraftKey) return;
+    let saved: Record<string, string> = {};
+    try {
+      saved = JSON.parse(localStorage.getItem("kuzens-drafts") || "{}");
+    } catch {
+      saved = {};
+    }
+    if (threadDraft) saved[threadDraftKey] = threadDraft;
+    else delete saved[threadDraftKey];
+    localStorage.setItem("kuzens-drafts", JSON.stringify(saved));
+  }, [threadDraft, threadDraftKey, threadDraftLoadedKey]);
+
+  useEffect(() => {
     function keyboardShortcut(event: KeyboardEvent) {
       const target = event.target as HTMLElement | null;
       const typing =
@@ -1444,9 +1539,58 @@ export function KuzensApp() {
         target instanceof HTMLButtonElement ||
         target instanceof HTMLSelectElement ||
         target?.isContentEditable;
+      if (event.key === "Escape" && event.type === "keydown") {
+        setContextMenu(null);
+        setModal(null);
+        setMobileChannels(false);
+        return;
+      }
       if ((event.ctrlKey || event.metaKey) && event.key.toLocaleLowerCase("en-US") === "k") {
         event.preventDefault();
         searchInput.current?.focus();
+        return;
+      }
+      if (
+        (event.ctrlKey || event.metaKey) &&
+        event.shiftKey &&
+        event.key.toLocaleLowerCase("en-US") === "m" &&
+        event.type === "keydown" &&
+        voiceConnected
+      ) {
+        event.preventDefault();
+        if (preferences.pushToTalk) {
+          setToast({ text: "Bas-konuş açık: konuşmak için Boşluk tuşunu basılı tut." });
+        } else {
+          setMuted((current) => {
+            const next = !current;
+            voiceStream.current?.getAudioTracks().forEach((track) => {
+              track.enabled = !next;
+            });
+            return next;
+          });
+        }
+        return;
+      }
+      if (
+        event.altKey &&
+        (event.key === "ArrowUp" || event.key === "ArrowDown") &&
+        event.type === "keydown" &&
+        !typing
+      ) {
+        const navigable = channels.filter((channel) => channel.kind === "text");
+        const currentIndex = Math.max(
+          0,
+          navigable.findIndex((channel) => channel.id === activeChannel),
+        );
+        const direction = event.key === "ArrowDown" ? 1 : -1;
+        const next = navigable[
+          (currentIndex + direction + navigable.length) % navigable.length
+        ];
+        if (next) {
+          event.preventDefault();
+          setActiveChannel(next.id);
+          setMobileChannels(false);
+        }
         return;
       }
       if (
@@ -1478,7 +1622,7 @@ export function KuzensApp() {
       window.removeEventListener("keydown", keyboardShortcut);
       window.removeEventListener("keyup", keyboardShortcut);
     };
-  }, [preferences.pushToTalk, voiceConnected]);
+  }, [activeChannel, channels, preferences.pushToTalk, voiceConnected]);
 
   useEffect(() => {
     const connections = peerConnections.current;
@@ -4035,7 +4179,17 @@ export function KuzensApp() {
           </div>
         ) : (
           <>
-            <div className="message-list" ref={messageList}>
+            <div
+              className="message-list"
+              ref={messageList}
+              onScroll={(event) => {
+                const list = event.currentTarget;
+                const atLatest =
+                  list.scrollHeight - list.scrollTop - list.clientHeight < 96;
+                stickToLatest.current = atLatest;
+                if (atLatest) setShowJumpToLatest(false);
+              }}
+            >
               <section className="channel-intro">
                 <span>#</span>
                 <h1>#{selected?.name}</h1>
@@ -4174,6 +4328,23 @@ export function KuzensApp() {
                 </div>
               )}
             </div>
+
+            {showJumpToLatest && (
+              <button
+                type="button"
+                className="jump-latest"
+                onClick={() => {
+                  stickToLatest.current = true;
+                  setShowJumpToLatest(false);
+                  messageList.current?.scrollTo({
+                    top: messageList.current.scrollHeight,
+                    behavior: "smooth",
+                  });
+                }}
+              >
+                Yeni mesajlar <span>↓</span>
+              </button>
+            )}
 
             <form className="composer-wrap" onSubmit={sendMessage}>
               {mentionCandidates.length > 0 && (
@@ -5353,6 +5524,16 @@ export function KuzensApp() {
             </section>
 
             <section className="preference-section">
+              <div className="preference-heading"><span>KLAVYE KISAYOLLARI</span><small>Hızlı ve erişilebilir gezinme</small></div>
+              <div className="shortcut-list">
+                <div><span>Mesajlarda ara</span><kbd>CTRL / ⌘ + K</kbd></div>
+                <div><span>Önceki / sonraki metin odası</span><kbd>ALT + ↑ / ↓</kbd></div>
+                <div><span>Mikrofonu aç / kapat</span><kbd>CTRL / ⌘ + SHIFT + M</kbd></div>
+                <div><span>Pencere veya menüyü kapat</span><kbd>ESC</kbd></div>
+              </div>
+            </section>
+
+            <section className="preference-section">
               <div className="preference-heading"><span>SES VE MİKROFON</span><small>Tarayıcı destekli ses işleme</small></div>
               <label className="settings-field">
                 <span>Giriş aygıtı</span>
@@ -6018,22 +6199,62 @@ export function KuzensApp() {
                 <div className="thread-scroll">
                   {activeThread.parent && (
                     <article className="thread-parent">
-                      <header><strong>{activeThread.parent.authorName}</strong><span>{activeThread.parent.authorTag}</span><time>{timeLabel(activeThread.parent.createdAt)}</time></header>
-                      <p>{activeThread.parent.content}</p>
+                      {activeThread.parent.blockedAuthor &&
+                      !revealedBlockedMessages.has(activeThread.parent.id) ? (
+                        <button
+                          type="button"
+                          className="blocked-message-reveal"
+                          onClick={() =>
+                            setRevealedBlockedMessages((current) => {
+                              const next = new Set(current);
+                              next.add(activeThread.parent!.id);
+                              return next;
+                            })
+                          }
+                        >
+                          <span>Engellenen kullanıcıdan başlangıç mesajı</span>
+                          <strong>Bir kez göster</strong>
+                        </button>
+                      ) : (
+                        <>
+                          <header><strong>{activeThread.parent.authorName}</strong><span>{activeThread.parent.authorTag}</span><time>{timeLabel(activeThread.parent.createdAt)}</time></header>
+                          <p>{activeThread.parent.content}</p>
+                        </>
+                      )}
                     </article>
                   )}
                   <div className="thread-divider"><span>{threadReplies.length} YANIT</span></div>
                   {threadReplies.map((reply) => (
                     <article className="thread-reply" key={reply.id}>
-                      <Avatar name={reply.authorName} tone={toneFor(reply.authorProfileId)} size="sm" />
-                      <div>
-                        <header><strong>{reply.authorName}</strong><span>@{reply.authorUsername}</span><time>{timeLabel(reply.createdAt)}</time></header>
-                        <p className={reply.deletedAt ? "deleted" : ""}>{reply.deletedAt ? "Bu yanıt silindi." : reply.content}</p>
-                      </div>
-                      {!reply.deletedAt &&
-                        (reply.authorProfileId === profile?.id || canManageMessages) && (
-                          <button type="button" onClick={() => void deleteThreadReply(reply)} aria-label="Yanıtı sil">×</button>
-                        )}
+                      {reply.blockedAuthor &&
+                      !revealedBlockedMessages.has(reply.id) ? (
+                        <button
+                          type="button"
+                          className="blocked-message-reveal"
+                          onClick={() =>
+                            setRevealedBlockedMessages((current) => {
+                              const next = new Set(current);
+                              next.add(reply.id);
+                              return next;
+                            })
+                          }
+                        >
+                          <span>Engellenen kullanıcıdan konu yanıtı</span>
+                          <strong>Bir kez göster</strong>
+                        </button>
+                      ) : (
+                        <>
+                          <Avatar name={reply.authorName} tone={toneFor(reply.authorProfileId)} size="sm" />
+                          <div>
+                            <header><strong>{reply.authorName}</strong><span>@{reply.authorUsername}</span><time>{timeLabel(reply.createdAt)}</time></header>
+                            <p className={reply.deletedAt ? "deleted" : ""}>{reply.deletedAt ? "Bu yanıt silindi." : reply.content}</p>
+                          </div>
+                          {!reply.deletedAt &&
+                            (reply.authorProfileId === profile?.id || canManageMessages) && (
+                              <button type="button" onClick={() => void deleteThreadReply(reply)} aria-label="Yanıtı sil">×</button>
+                            )}
+                        </>
+                      )}
                     </article>
                   ))}
                   {!threadReplies.length && (
@@ -6458,7 +6679,16 @@ export function KuzensApp() {
         </div>
       )}
 
-      {toast && <div className={`toast ${toast.tone || ""}`}><span>{toast.tone === "success" ? "✓" : toast.tone === "danger" ? "!" : "i"}</span>{toast.text}</div>}
+      {toast && (
+        <div
+          className={`toast ${toast.tone || ""}`}
+          role={toast.tone === "danger" ? "alert" : "status"}
+          aria-live={toast.tone === "danger" ? "assertive" : "polite"}
+        >
+          <span aria-hidden="true">{toast.tone === "success" ? "✓" : toast.tone === "danger" ? "!" : "i"}</span>
+          {toast.text}
+        </div>
+      )}
     </main>
   );
 }
