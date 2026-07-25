@@ -1801,14 +1801,15 @@
   font-size: clamp(28px, 4vw, 43px);
   line-height: 1.02;
   letter-spacing: -0.055em;
+  font-weight: 620;
 }
 
 .registration-brand p {
   max-width: 330px;
   margin: 0;
   color: #90899b;
-  font-size: 12px;
-  line-height: 1.6;
+  font-size: 14px;
+  line-height: 1.65;
 }
 
 .registration-brand ul {
@@ -1818,7 +1819,7 @@
   padding: 0;
   list-style: none;
   color: #aca5b5;
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .registration-brand li {
@@ -1850,22 +1851,23 @@
 
 .registration-title > span {
   color: #9c7cff;
-  font-size: 8px;
+  font-size: 10px;
   font-weight: 800;
   letter-spacing: 0.15em;
 }
 
 .registration-title h1 {
   margin: 8px 0 5px;
-  font-size: 25px;
+  font-size: 30px;
   letter-spacing: -0.04em;
+  font-weight: 680;
 }
 
 .registration-title p {
   margin: 0 0 22px;
   color: #777080;
-  font-size: 9px;
-  line-height: 1.5;
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .registration-form > label {
@@ -1873,7 +1875,7 @@
   gap: 7px;
   margin-bottom: 14px;
   color: #777080;
-  font-size: 8px;
+  font-size: 10px;
   font-weight: 800;
   letter-spacing: 0.11em;
 }
@@ -1890,6 +1892,8 @@
   padding: 11px;
   outline: 0;
   color: #eeeaf4;
+  font-size: 13px;
+  font-weight: 550;
 }
 
 .username-field {
@@ -1911,6 +1915,8 @@
   outline: 0;
   background: transparent;
   color: #eeeaf4;
+  font-size: 13px;
+  font-weight: 550;
 }
 
 .registration-form > label > input:focus,
@@ -1920,7 +1926,7 @@
 
 .registration-form > label small {
   color: #5e5866;
-  font-size: 7px;
+  font-size: 9px;
   font-weight: 500;
   letter-spacing: 0;
 }
@@ -1939,8 +1945,8 @@
   gap: 8px;
   color: #85808d;
   cursor: pointer;
-  font-size: 8px;
-  line-height: 1.45;
+  font-size: 10px;
+  line-height: 1.55;
 }
 
 .legal-checks input {
@@ -1983,7 +1989,7 @@
   border-radius: 10px;
   background: linear-gradient(145deg, #a582ff, #7453e7);
   color: #fff;
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 800;
   box-shadow: 0 10px 22px rgba(104, 72, 211, 0.25);
 }
@@ -1998,13 +2004,13 @@
   border-radius: 8px;
   background: rgba(255, 119, 107, 0.09);
   color: #ff9188;
-  font-size: 8px;
+  font-size: 10px;
 }
 
 .registration-foot {
   margin: 11px 0 0;
   color: #5f5967;
-  font-size: 7px;
+  font-size: 9px;
   text-align: center;
 }
 
