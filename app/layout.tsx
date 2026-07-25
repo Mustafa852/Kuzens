@@ -34,6 +34,11 @@ export async function generateMetadata(): Promise<Metadata> {
     description:
       "Topluluğun için mesajlaşma, sesli odalar ve ekran paylaşımı.",
     manifest: "/manifest.webmanifest",
+    icons: {
+      icon: [{ url: "/favicon.svg", type: "image/svg+xml" }],
+      shortcut: "/favicon.svg",
+      apple: "/favicon.svg",
+    },
     applicationName: "Kuzens",
     appleWebApp: {
       capable: true,

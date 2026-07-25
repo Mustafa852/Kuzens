@@ -378,4 +378,5 @@ test("ships an installable shell without caching private application data", () =
   assert.match(manifestSource, /display:\s*"standalone"/);
   assert.match(serviceWorkerSource, /skipWaiting/);
   assert.doesNotMatch(serviceWorkerSource, /fetch|caches\./);
+  assert.match(layoutSource, /favicon\.svg/);
 });
