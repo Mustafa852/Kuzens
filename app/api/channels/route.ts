@@ -1,5 +1,11 @@
-import { and, asc, eq } from "drizzle-orm";
-import { channels, messages, rtcSignals } from "@/db/schema";
+import { and, asc, eq, inArray } from "drizzle-orm";
+import {
+  channels,
+  messageMentions,
+  messageReactions,
+  messages,
+  rtcSignals,
+} from "@/db/schema";
 import {
   DEFAULT_SERVER_ID,
   PERMISSIONS,
@@ -22,6 +28,8 @@ type ChannelPayload = {
   name?: string;
   kind?: "text" | "voice";
   serverId?: string;
+  topic?: string;
+  slowModeSeconds?: number;
 };
 
 function channelName(value: unknown) {
@@ -98,6 +106,18 @@ export async function PATCH(request: Request) {
     await enforceRateLimit(request, "channel-update", identity.email, 20, 60 * 60_000);
     const id = cleanText(payload.id, { max: 80 });
     const name = channelName(payload.name);
+    const topic =
+      typeof payload.topic === "string"
+        ? cleanText(payload.topic, { min: 0, max: 160, multiline: true })
+        : "";
+    const slowModeSeconds = Number(payload.slowModeSeconds || 0);
+    if (
+      !Number.isInteger(slowModeSeconds) ||
+      slowModeSeconds < 0 ||
+      slowModeSeconds > 21_600
+    ) {
+      return apiJson({ error: "Geçersiz yavaş mod süresi." }, { status: 400 });
+    }
     const [existing] = await db
       .select()
       .from(channels)
@@ -105,9 +125,18 @@ export async function PATCH(request: Request) {
       .limit(1);
     if (!existing) return apiJson({ error: "Oda bulunamadı." }, { status: 404 });
 
-    await db.update(channels).set({ name }).where(eq(channels.id, id));
-    await writeAudit(profile.id, "channel.rename", id, name, serverId);
-    return apiJson({ channel: { ...existing, name } });
+    await db
+      .update(channels)
+      .set({ name, topic, slowModeSeconds })
+      .where(eq(channels.id, id));
+    await writeAudit(
+      profile.id,
+      "channel.update",
+      id,
+      `${name}:${slowModeSeconds}`,
+      serverId,
+    );
+    return apiJson({ channel: { ...existing, name, topic, slowModeSeconds } });
   } catch (error) {
     return apiError(error);
   }
@@ -132,6 +161,15 @@ export async function DELETE(request: Request) {
       .where(and(eq(channels.id, id), eq(channels.serverId, serverId)))
       .limit(1);
     if (!existing) return apiJson({ error: "Oda bulunamadı." }, { status: 404 });
+    const messageRows = await db
+      .select({ id: messages.id })
+      .from(messages)
+      .where(eq(messages.channelId, id));
+    const messageIds = messageRows.map((message) => message.id);
+    if (messageIds.length) {
+      await db.delete(messageMentions).where(inArray(messageMentions.messageId, messageIds));
+      await db.delete(messageReactions).where(inArray(messageReactions.messageId, messageIds));
+    }
     await db.delete(messages).where(eq(messages.channelId, id));
     await db.delete(rtcSignals).where(eq(rtcSignals.channelId, id));
     await db.delete(channels).where(eq(channels.id, id));

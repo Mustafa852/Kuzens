@@ -17,6 +17,11 @@ const [
   friendsRoute,
   serversRoute,
   communitySource,
+  reactionsRoute,
+  notificationsRoute,
+  profileRoute,
+  manifestSource,
+  serviceWorkerSource,
   nextConfig,
 ] =
   await Promise.all([
@@ -34,6 +39,11 @@ const [
     readFile(new URL("../app/api/friends/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/servers/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../lib/community.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/reactions/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/notifications/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/profile/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/manifest.ts", import.meta.url), "utf8"),
+    readFile(new URL("../public/sw.js", import.meta.url), "utf8"),
     readFile(new URL("../next.config.ts", import.meta.url), "utf8"),
   ]);
 
@@ -78,7 +88,16 @@ test("enforces server-side request and abuse protections", () => {
   assert.match(securitySource, /enforceRateLimit/);
   assert.match(messagesRoute, /assertTrustedMutation\(request\)/);
   assert.match(messagesRoute, /enforceRateLimit/);
-  for (const route of [membersRoute, rolesRoute, invitesRoute, friendsRoute, serversRoute]) {
+  for (const route of [
+    membersRoute,
+    rolesRoute,
+    invitesRoute,
+    friendsRoute,
+    serversRoute,
+    reactionsRoute,
+    notificationsRoute,
+    profileRoute,
+  ]) {
     assert.match(route, /assertTrustedMutation\(request\)/);
     assert.match(route, /enforceRateLimit/);
   }
@@ -101,4 +120,22 @@ test("enforces scoped ownership, role hierarchy, and bans", () => {
   assert.match(membersRoute, /serverBans/);
   assert.match(invitesRoute, /Bu topluluğa erişimin yasaklanmış/);
   assert.match(rolesRoute, /Kurucu rolü başka bir üyeye atanamaz/);
+});
+
+test("provides app-like context actions, mentions, reactions, and profile settings", () => {
+  assert.match(appSource, /onContextMenu/);
+  assert.match(appSource, /className="context-menu"/);
+  assert.match(appSource, /mention-suggestions/);
+  assert.match(appSource, /inline-mention/);
+  assert.match(appSource, /toggleReaction/);
+  assert.match(appSource, /profile-settings-modal/);
+  assert.match(messagesRoute, /@everyone ve @here yalnızca yetkili/);
+  assert.match(messagesRoute, /messageMentions/);
+  assert.match(reactionsRoute, /ALLOWED_REACTIONS/);
+});
+
+test("ships an installable shell without caching private application data", () => {
+  assert.match(manifestSource, /display:\s*"standalone"/);
+  assert.match(serviceWorkerSource, /skipWaiting/);
+  assert.doesNotMatch(serviceWorkerSource, /fetch|caches\./);
 });

@@ -1,5 +1,12 @@
-import { and, asc, desc, eq, gt, lte } from "drizzle-orm";
-import { channels, messages } from "@/db/schema";
+import { and, asc, desc, eq, gt, inArray, lte } from "drizzle-orm";
+import {
+  channels,
+  messageMentions,
+  messageReactions,
+  messages,
+  profiles,
+  serverMembers,
+} from "@/db/schema";
 import {
   DEFAULT_SERVER_ID,
   PERMISSIONS,
@@ -23,7 +30,50 @@ type MessagePayload = {
   channelId?: string;
   content?: string;
   replyToId?: string | null;
+  action?: "pin";
+  pinned?: boolean;
 };
+
+async function decorateMessages(
+  db: Awaited<ReturnType<typeof requireMember>>["db"],
+  rows: Array<typeof messages.$inferSelect>,
+  profileId: string,
+) {
+  if (!rows.length) return [];
+  const ids = rows.map((message) => message.id);
+  const [reactionRows, mentionRows] = await Promise.all([
+    db.select().from(messageReactions).where(inArray(messageReactions.messageId, ids)),
+    db
+      .select({ messageId: messageMentions.messageId })
+      .from(messageMentions)
+      .where(
+        and(
+          inArray(messageMentions.messageId, ids),
+          eq(messageMentions.profileId, profileId),
+        ),
+      ),
+  ]);
+  const mentioned = new Set(mentionRows.map((item) => item.messageId));
+  return rows.map((message) => {
+    const grouped = new Map<string, { emoji: string; count: number; reactedByMe: boolean }>();
+    for (const reaction of reactionRows) {
+      if (reaction.messageId !== message.id) continue;
+      const current = grouped.get(reaction.emoji) || {
+        emoji: reaction.emoji,
+        count: 0,
+        reactedByMe: false,
+      };
+      current.count += 1;
+      if (reaction.profileId === profileId) current.reactedByMe = true;
+      grouped.set(reaction.emoji, current);
+    }
+    return {
+      ...message,
+      reactions: Array.from(grouped.values()),
+      mentionedMe: mentioned.has(message.id),
+    };
+  });
+}
 
 async function requireTextChannel(
   db: Awaited<ReturnType<typeof requireMember>>["db"],
@@ -51,7 +101,7 @@ export async function GET(request: Request) {
     const url = new URL(request.url);
     const syncBoundary = new Date().toISOString();
     const serverId = cleanText(url.searchParams.get("server") || DEFAULT_SERVER_ID, { max: 80 });
-    const { db } = await requireMember(identity, serverId);
+    const { db, profile } = await requireMember(identity, serverId);
     const channelId = cleanText(url.searchParams.get("channel") || "genel", { max: 80 });
     if (!(await requireTextChannel(db, channelId, serverId))) {
       return apiJson({ error: "Metin odası bulunamadı." }, { status: 404 });
@@ -75,7 +125,10 @@ export async function GET(request: Request) {
         )
         .orderBy(asc(messages.createdAt))
         .limit(100);
-      return apiJson({ messages: rows, syncedAt: syncBoundary });
+      return apiJson({
+        messages: await decorateMessages(db, rows, profile.id),
+        syncedAt: syncBoundary,
+      });
     }
 
     const latest = await db
@@ -84,7 +137,10 @@ export async function GET(request: Request) {
       .where(eq(messages.channelId, channelId))
       .orderBy(desc(messages.createdAt))
       .limit(100);
-    return apiJson({ messages: latest.reverse(), syncedAt: syncBoundary });
+    return apiJson({
+      messages: await decorateMessages(db, latest.reverse(), profile.id),
+      syncedAt: syncBoundary,
+    });
   } catch (error) {
     return apiError(error);
   }
@@ -100,19 +156,52 @@ export async function POST(request: Request) {
     await enforceRateLimit(request, "message-send", identity.email, 15, 10_000);
     const channelId = cleanText(payload.channelId, { max: 80 });
     const content = cleanText(payload.content, { max: 2_000, multiline: true });
-    if (!(await requireTextChannel(db, channelId, serverId))) {
+    const channel = await requireTextChannel(db, channelId, serverId);
+    if (!channel) {
       return apiJson({ error: "Metin odası bulunamadı." }, { status: 404 });
+    }
+    const permissions = await permissionsFor(profile, serverId);
+    if (
+      (content.includes("@everyone") || content.includes("@here")) &&
+      (permissions & (PERMISSIONS.manageServer | PERMISSIONS.manageMessages)) === 0
+    ) {
+      return apiJson({ error: "@everyone ve @here yalnızca yetkili roller tarafından kullanılabilir." }, { status: 403 });
+    }
+    if (channel.slowModeSeconds > 0 && (permissions & PERMISSIONS.manageMessages) === 0) {
+      const [lastMessage] = await db
+        .select({ createdAt: messages.createdAt })
+        .from(messages)
+        .where(
+          and(
+            eq(messages.channelId, channelId),
+            eq(messages.authorProfileId, profile.id),
+          ),
+        )
+        .orderBy(desc(messages.createdAt))
+        .limit(1);
+      const waitMs = lastMessage
+        ? channel.slowModeSeconds * 1_000 -
+          (Date.now() - new Date(lastMessage.createdAt).getTime())
+        : 0;
+      if (waitMs > 0) {
+        return apiJson(
+          { error: `Yavaş mod açık. ${Math.ceil(waitMs / 1_000)} saniye beklemelisin.` },
+          { status: 429 },
+        );
+      }
     }
 
     let replyToId: string | null = null;
+    let replyTargetProfileId: string | null = null;
     if (payload.replyToId) {
       replyToId = cleanText(payload.replyToId, { max: 80 });
       const [reply] = await db
-        .select({ id: messages.id })
+        .select({ id: messages.id, authorProfileId: messages.authorProfileId })
         .from(messages)
         .where(and(eq(messages.id, replyToId), eq(messages.channelId, channelId)))
         .limit(1);
       if (!reply) return apiJson({ error: "Yanıtlanan mesaj bulunamadı." }, { status: 400 });
+      replyTargetProfileId = reply.authorProfileId || null;
     }
 
     const message = {
@@ -123,12 +212,52 @@ export async function POST(request: Request) {
       authorTag: `@${profile.username}`,
       content,
       replyToId,
+      pinned: false,
       editedAt: null,
       deletedAt: null,
       createdAt: new Date().toISOString(),
     };
     await db.insert(messages).values(message);
-    return apiJson({ message }, { status: 201 });
+    const membershipRows = await db
+      .select({ profileId: serverMembers.profileId })
+      .from(serverMembers)
+      .where(eq(serverMembers.serverId, serverId));
+    const memberIds = new Set(membershipRows.map((item) => item.profileId));
+    const profileRows = await db.select().from(profiles);
+    const mentionedUsernames = new Set(
+      Array.from(content.matchAll(/@([a-z0-9_]{3,24})\b/gi)).map((match) =>
+        match[1].toLocaleLowerCase("en-US"),
+      ),
+    );
+    const massMention = content.includes("@everyone") || content.includes("@here");
+    const targets = profileRows.filter(
+      (item) =>
+        item.id !== profile.id &&
+        (memberIds.has(item.id) || (serverId === DEFAULT_SERVER_ID && item.isOwner)) &&
+        (
+          massMention ||
+          mentionedUsernames.has(item.username) ||
+          item.id === replyTargetProfileId
+        ),
+    );
+    if (targets.length) {
+      await db
+        .insert(messageMentions)
+        .values(
+          targets.slice(0, 100).map((target) => ({
+            id: `${message.id}:${target.id}`,
+            messageId: message.id,
+            profileId: target.id,
+            readAt: null,
+            createdAt: message.createdAt,
+          })),
+        )
+        .onConflictDoNothing();
+    }
+    return apiJson(
+      { message: { ...message, reactions: [], mentionedMe: false } },
+      { status: 201 },
+    );
   } catch (error) {
     return apiError(error);
   }
@@ -143,7 +272,6 @@ export async function PATCH(request: Request) {
     const { db, profile } = await requireMember(identity, serverId);
     await enforceRateLimit(request, "message-edit", identity.email, 20, 60_000);
     const id = cleanText(payload.id, { max: 80 });
-    const content = cleanText(payload.content, { max: 2_000, multiline: true });
     const [message] = await db.select().from(messages).where(eq(messages.id, id)).limit(1);
     if (!message || message.deletedAt) {
       return apiJson({ error: "Mesaj bulunamadı." }, { status: 404 });
@@ -157,6 +285,28 @@ export async function PATCH(request: Request) {
       return apiJson({ error: "Mesaj bu topluluğa ait değil." }, { status: 403 });
     }
     const permissions = await permissionsFor(profile, serverId);
+    if (payload.action === "pin") {
+      if ((permissions & PERMISSIONS.manageMessages) === 0) {
+        return apiJson({ error: "Mesaj sabitleme yetkin yok." }, { status: 403 });
+      }
+      const pinned = payload.pinned !== false;
+      await db.update(messages).set({ pinned }).where(eq(messages.id, id));
+      await writeAudit(
+        profile.id,
+        pinned ? "message.pin" : "message.unpin",
+        id,
+        undefined,
+        serverId,
+      );
+      return apiJson({ message: { ...message, pinned } });
+    }
+    const content = cleanText(payload.content, { max: 2_000, multiline: true });
+    if (
+      (content.includes("@everyone") || content.includes("@here")) &&
+      (permissions & (PERMISSIONS.manageServer | PERMISSIONS.manageMessages)) === 0
+    ) {
+      return apiJson({ error: "@everyone ve @here yalnızca yetkili roller tarafından kullanılabilir." }, { status: 403 });
+    }
     const ownsMessage =
       message.authorProfileId === profile.id || message.authorTag === `@${profile.username}`;
     if (!ownsMessage && (permissions & PERMISSIONS.manageMessages) === 0) {
@@ -164,8 +314,56 @@ export async function PATCH(request: Request) {
     }
     const editedAt = new Date().toISOString();
     await db.update(messages).set({ content, editedAt }).where(eq(messages.id, id));
+    await db.delete(messageMentions).where(eq(messageMentions.messageId, id));
+    const [membershipRows, profileRows, replyRows] = await Promise.all([
+      db
+        .select({ profileId: serverMembers.profileId })
+        .from(serverMembers)
+        .where(eq(serverMembers.serverId, serverId)),
+      db.select().from(profiles),
+      message.replyToId
+        ? db
+            .select({ authorProfileId: messages.authorProfileId })
+            .from(messages)
+            .where(eq(messages.id, message.replyToId))
+            .limit(1)
+        : Promise.resolve([]),
+    ]);
+    const memberIds = new Set(membershipRows.map((item) => item.profileId));
+    const usernames = new Set(
+      Array.from(content.matchAll(/@([a-z0-9_]{3,24})\b/gi)).map((match) =>
+        match[1].toLocaleLowerCase("en-US"),
+      ),
+    );
+    const massMention = content.includes("@everyone") || content.includes("@here");
+    const replyProfileId = replyRows[0]?.authorProfileId || null;
+    const targets = profileRows.filter(
+      (item) =>
+        item.id !== profile.id &&
+        (memberIds.has(item.id) || (serverId === DEFAULT_SERVER_ID && item.isOwner)) &&
+        (massMention || usernames.has(item.username) || item.id === replyProfileId),
+    );
+    if (targets.length) {
+      await db
+        .insert(messageMentions)
+        .values(
+          targets.slice(0, 100).map((target) => ({
+            id: `${id}:${target.id}`,
+            messageId: id,
+            profileId: target.id,
+            readAt: null,
+            createdAt: editedAt,
+          })),
+        )
+        .onConflictDoNothing();
+    }
     await writeAudit(profile.id, "message.edit", id, undefined, serverId);
-    return apiJson({ message: { ...message, content, editedAt } });
+    const [decorated] = await decorateMessages(
+      db,
+      [{ ...message, content, editedAt }],
+      profile.id,
+    );
+    return apiJson({ message: decorated });
   } catch (error) {
     return apiError(error);
   }
@@ -203,6 +401,10 @@ export async function DELETE(request: Request) {
       .update(messages)
       .set({ content: "Mesaj silindi.", deletedAt, editedAt: null })
       .where(eq(messages.id, id));
+    await Promise.all([
+      db.delete(messageMentions).where(eq(messageMentions.messageId, id)),
+      db.delete(messageReactions).where(eq(messageReactions.messageId, id)),
+    ]);
     await writeAudit(profile.id, "message.delete", id, undefined, serverId);
     return apiJson({ ok: true, deletedAt });
   } catch (error) {

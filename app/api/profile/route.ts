@@ -157,3 +157,71 @@ export async function POST(request: Request) {
     return apiError(error);
   }
 }
+
+export async function PATCH(request: Request) {
+  try {
+    assertTrustedMutation(request);
+    const identity = requireIdentity(request);
+    await enforceRateLimit(request, "profile-update", identity.email, 10, 60 * 60_000);
+    const payload = await readJson<{
+      displayName?: string;
+      username?: string;
+      bio?: string;
+      customStatus?: string;
+      presenceStatus?: "online" | "idle" | "dnd" | "invisible";
+    }>(request, 8_192);
+    const existing = await findProfile(identity);
+    if (!existing) {
+      return apiJson({ error: "Profil bulunamadı." }, { status: 404 });
+    }
+    const displayName = cleanText(payload.displayName, { min: 2, max: 32 });
+    const username =
+      typeof payload.username === "string"
+        ? payload.username.trim().toLocaleLowerCase("en-US")
+        : "";
+    if (!/^[a-z0-9_]{3,24}$/.test(username)) {
+      return apiJson(
+        { error: "Kullanıcı adı 3–24 karakter olmalı; küçük harf, rakam ve _ kullanılabilir." },
+        { status: 400 },
+      );
+    }
+    const bio = cleanText(payload.bio ?? "", { min: 0, max: 190, multiline: true });
+    const customStatus = cleanText(payload.customStatus ?? "", { min: 0, max: 80 });
+    const presenceStatus = ["online", "idle", "dnd", "invisible"].includes(
+      payload.presenceStatus || "",
+    )
+      ? payload.presenceStatus!
+      : "online";
+    const db = await import("@/db").then(({ getDb }) => getDb());
+    const [usernameOwner] = await db
+      .select({ id: profiles.id })
+      .from(profiles)
+      .where(eq(profiles.username, username))
+      .limit(1);
+    if (usernameOwner && usernameOwner.id !== existing.id) {
+      return apiJson({ error: "Bu kullanıcı adı zaten kullanılıyor." }, { status: 409 });
+    }
+    if (username !== existing.username) {
+      await db
+        .update(memberRoles)
+        .set({ memberTag: `@${username}` })
+        .where(eq(memberRoles.memberTag, `@${existing.username}`));
+    }
+    await db
+      .update(profiles)
+      .set({ displayName, username, bio, customStatus, presenceStatus })
+      .where(eq(profiles.id, existing.id));
+    return apiJson({
+      profile: {
+        ...existing,
+        displayName,
+        username,
+        bio,
+        customStatus,
+        presenceStatus,
+      },
+    });
+  } catch (error) {
+    return apiError(error);
+  }
+}

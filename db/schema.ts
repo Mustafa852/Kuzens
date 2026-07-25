@@ -15,6 +15,8 @@ export const channels = sqliteTable(
     serverId: text("server_id").notNull(),
     name: text("name").notNull(),
     kind: text("kind", { enum: ["text", "voice"] }).notNull(),
+    topic: text("topic"),
+    slowModeSeconds: integer("slow_mode_seconds").notNull().default(0),
     position: integer("position").notNull().default(0),
     createdAt: text("created_at").notNull(),
   },
@@ -31,6 +33,7 @@ export const messages = sqliteTable(
     authorTag: text("author_tag").notNull(),
     content: text("content").notNull(),
     replyToId: text("reply_to_id"),
+    pinned: integer("pinned", { mode: "boolean" }).notNull().default(false),
     editedAt: text("edited_at"),
     deletedAt: text("deleted_at"),
     createdAt: text("created_at").notNull(),
@@ -48,6 +51,13 @@ export const profiles = sqliteTable(
     email: text("email").notNull(),
     displayName: text("display_name").notNull(),
     username: text("username").notNull(),
+    bio: text("bio").notNull().default(""),
+    customStatus: text("custom_status").notNull().default(""),
+    presenceStatus: text("presence_status", {
+      enum: ["online", "idle", "dnd", "invisible"],
+    })
+      .notNull()
+      .default("online"),
     isOwner: integer("is_owner", { mode: "boolean" }).notNull().default(false),
     birthConfirmed: integer("birth_confirmed", { mode: "boolean" }).notNull(),
     termsVersion: text("terms_version").notNull(),
@@ -184,6 +194,43 @@ export const friendships = sqliteTable(
   (table) => [
     index("friendships_requester_idx").on(table.requesterProfileId, table.status),
     index("friendships_addressee_idx").on(table.addresseeProfileId, table.status),
+  ],
+);
+
+export const messageReactions = sqliteTable(
+  "message_reactions",
+  {
+    id: text("id").primaryKey(),
+    messageId: text("message_id").notNull(),
+    profileId: text("profile_id").notNull(),
+    emoji: text("emoji").notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("message_reactions_message_profile_emoji_idx").on(
+      table.messageId,
+      table.profileId,
+      table.emoji,
+    ),
+    index("message_reactions_message_idx").on(table.messageId),
+  ],
+);
+
+export const messageMentions = sqliteTable(
+  "message_mentions",
+  {
+    id: text("id").primaryKey(),
+    messageId: text("message_id").notNull(),
+    profileId: text("profile_id").notNull(),
+    readAt: text("read_at"),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("message_mentions_message_profile_idx").on(
+      table.messageId,
+      table.profileId,
+    ),
+    index("message_mentions_profile_read_idx").on(table.profileId, table.readAt),
   ],
 );
 

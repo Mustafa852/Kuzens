@@ -33,6 +33,13 @@ export async function generateMetadata(): Promise<Metadata> {
     },
     description:
       "Topluluğun için mesajlaşma, sesli odalar ve ekran paylaşımı.",
+    manifest: "/manifest.webmanifest",
+    applicationName: "Kuzens",
+    appleWebApp: {
+      capable: true,
+      title: "Kuzens",
+      statusBarStyle: "black-translucent",
+    },
     openGraph: {
       title: "Kuzens — birlikte kal.",
       description:

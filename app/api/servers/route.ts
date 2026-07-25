@@ -4,6 +4,8 @@ import {
   channels,
   invites,
   memberRoles,
+  messageMentions,
+  messageReactions,
   messages,
   roles,
   rtcSignals,
@@ -149,6 +151,15 @@ export async function DELETE(request: Request) {
       .where(eq(channels.serverId, id));
     const channelIds = channelRows.map((item) => item.id);
     if (channelIds.length) {
+      const messageRows = await db
+        .select({ id: messages.id })
+        .from(messages)
+        .where(inArray(messages.channelId, channelIds));
+      const messageIds = messageRows.map((item) => item.id);
+      if (messageIds.length) {
+        await db.delete(messageMentions).where(inArray(messageMentions.messageId, messageIds));
+        await db.delete(messageReactions).where(inArray(messageReactions.messageId, messageIds));
+      }
       await db.delete(messages).where(inArray(messages.channelId, channelIds));
     }
     await db.delete(rtcSignals).where(eq(rtcSignals.serverId, id));

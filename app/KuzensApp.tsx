@@ -1,6 +1,14 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  FormEvent,
+  type MouseEvent as ReactMouseEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import "./kuzens.css";
 
 type Channel = {
@@ -8,6 +16,8 @@ type Channel = {
   serverId: string;
   name: string;
   kind: "text" | "voice";
+  topic?: string | null;
+  slowModeSeconds?: number;
   position: number;
 };
 
@@ -19,6 +29,9 @@ type ChatMessage = {
   authorTag: string;
   content: string;
   replyToId?: string | null;
+  pinned?: boolean;
+  mentionedMe?: boolean;
+  reactions?: Array<{ emoji: string; count: number; reactedByMe: boolean }>;
   editedAt?: string | null;
   deletedAt?: string | null;
   createdAt: string;
@@ -30,6 +43,9 @@ type Profile = {
   id: string;
   displayName: string;
   username: string;
+  bio?: string;
+  customStatus?: string;
+  presenceStatus?: "online" | "idle" | "dnd" | "invisible";
   isOwner: boolean;
 };
 
@@ -57,6 +73,9 @@ type Member = {
   lastSeenAt: string | null;
   voiceChannelId: string | null;
   sharing: boolean;
+  customStatus?: string;
+  presenceStatus?: "online" | "idle" | "dnd" | "invisible" | "offline";
+  bio?: string;
   role: { id: string; name: string; color: string } | null;
 };
 
@@ -89,6 +108,27 @@ type FriendItem = {
   status: "pending" | "accepted" | "blocked";
   direction: "incoming" | "outgoing";
   profile: { id: string; name: string; tag: string };
+};
+
+type MentionNotification = {
+  id: string;
+  messageId: string;
+  serverId: string;
+  serverName: string;
+  channelId: string;
+  channelName: string;
+  authorName: string;
+  content: string;
+  createdAt: string;
+};
+
+type ContextMenuState = {
+  x: number;
+  y: number;
+  kind: "server" | "channel" | "message" | "member";
+  channel?: Channel;
+  message?: ChatMessage;
+  member?: Member;
 };
 
 const permissionOptions = [
@@ -156,6 +196,7 @@ function timeLabel(value: string) {
 
 function memberStatus(member: Member) {
   if (member.voiceChannelId) return member.sharing ? "Ekran paylaşıyor" : "Ses odasında";
+  if (member.customStatus) return member.customStatus;
   if (member.online) return member.role?.name || "Çevrimiçi";
   if (!member.lastSeenAt) return "Çevrimdışı";
   const minutes = Math.max(
@@ -165,6 +206,40 @@ function memberStatus(member: Member) {
   if (minutes < 60) return `${minutes} dk önce`;
   const hours = Math.floor(minutes / 60);
   return hours < 24 ? `${hours} sa önce` : `${Math.floor(hours / 24)} gün önce`;
+}
+
+function MessageText({
+  content,
+  members,
+  onMention,
+}: {
+  content: string;
+  members: Member[];
+  onMention: (tag: string) => void;
+}) {
+  const parts = content.split(/(@(?:everyone|here|[a-z0-9_]{3,24}))/gi);
+  return (
+    <>
+      {parts.map((part, index) => {
+        if (!part.startsWith("@")) return <span key={`${part}-${index}`}>{part}</span>;
+        const member = members.find(
+          (item) => item.tag.toLocaleLowerCase("en-US") === part.toLocaleLowerCase("en-US"),
+        );
+        const mass = /^@(everyone|here)$/i.test(part);
+        if (!member && !mass) return <span key={`${part}-${index}`}>{part}</span>;
+        return (
+          <button
+            type="button"
+            className={`inline-mention ${mass ? "mass" : ""}`}
+            key={`${part}-${index}`}
+            onClick={() => onMention(member?.tag || part)}
+          >
+            {member?.tag || part}
+          </button>
+        );
+      })}
+    </>
+  );
 }
 
 function LinkEmbed({ content }: { content: string }) {
@@ -262,10 +337,27 @@ export function KuzensApp() {
   const [deafened, setDeafened] = useState(false);
   const [sharing, setSharing] = useState(false);
   const [toast, setToast] = useState<Toast | null>(null);
-  const [modal, setModal] = useState<"channel" | "roles" | "server" | "friends" | null>(null);
+  const [modal, setModal] = useState<
+    "channel" | "channelSettings" | "roles" | "server" | "friends" | "profile" | "memberProfile" | "notifications" | null
+  >(null);
+  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [newServerName, setNewServerName] = useState("");
   const [newChannelName, setNewChannelName] = useState("");
   const [newChannelKind, setNewChannelKind] = useState<"text" | "voice">("text");
+  const [channelSettingsName, setChannelSettingsName] = useState("");
+  const [channelSettingsTopic, setChannelSettingsTopic] = useState("");
+  const [channelSlowMode, setChannelSlowMode] = useState(0);
+  const [profileDisplayName, setProfileDisplayName] = useState("");
+  const [profileUsername, setProfileUsername] = useState("");
+  const [profileBio, setProfileBio] = useState("");
+  const [profileCustomStatus, setProfileCustomStatus] = useState("");
+  const [profilePresence, setProfilePresence] = useState<
+    "online" | "idle" | "dnd" | "invisible"
+  >("online");
+  const [profileSaving, setProfileSaving] = useState(false);
+  const [notifications, setNotifications] = useState<MentionNotification[]>([]);
+  const [viewingMember, setViewingMember] = useState<Member | null>(null);
+  const [showPinnedOnly, setShowPinnedOnly] = useState(false);
   const [mobileChannels, setMobileChannels] = useState(false);
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [profile, setProfile] = useState<Profile | null | undefined>(undefined);
@@ -287,7 +379,6 @@ export function KuzensApp() {
   const displayStream = useRef<MediaStream | null>(null);
   const previewVideo = useRef<HTMLVideoElement | null>(null);
   const messageList = useRef<HTMLDivElement | null>(null);
-  const messageSyncAt = useRef<Record<string, string>>({});
   const rtcSyncAt = useRef(new Date(Date.now() - 30_000).toISOString());
   const rtcChannelId = useRef<string | null>(null);
   const peerConnections = useRef(new Map<string, RTCPeerConnection>());
@@ -326,23 +417,39 @@ export function KuzensApp() {
     (member) => member.id !== profile?.id && member.sharing && remoteStreams[member.id],
   );
   const canManageChannels = (permissions & 2) !== 0;
+  const canManageMessages = (permissions & 8) !== 0;
   const canKickMembers = (permissions & 16) !== 0;
   const canBanMembers = (permissions & 32) !== 0;
   const ownsActiveServer =
     activeServerId === "kuzens"
       ? Boolean(profile?.isOwner)
       : activeServer.ownerProfileId === profile?.id;
+  const mentionQuery = useMemo(() => {
+    const match = draft.match(/(?:^|\s)@([a-z0-9_]*)$/i);
+    return match ? match[1].toLocaleLowerCase("en-US") : null;
+  }, [draft]);
+  const mentionCandidates =
+    mentionQuery === null
+      ? []
+      : members
+          .filter(
+            (member) =>
+              member.tag.slice(1).toLocaleLowerCase("en-US").includes(mentionQuery) ||
+              member.name.toLocaleLowerCase("tr-TR").includes(mentionQuery),
+          )
+          .slice(0, 6);
 
   const visibleMessages = useMemo(() => {
     const normalized = search.trim().toLocaleLowerCase("tr-TR");
     return messages.filter(
       (message) =>
         message.channelId === activeChannel &&
+        (!showPinnedOnly || message.pinned) &&
         (!normalized ||
           message.content.toLocaleLowerCase("tr-TR").includes(normalized) ||
           message.authorName.toLocaleLowerCase("tr-TR").includes(normalized)),
     );
-  }, [activeChannel, messages, search]);
+  }, [activeChannel, messages, search, showPinnedOnly]);
 
   useEffect(() => {
     apiFetch("/api/profile")
@@ -422,12 +529,10 @@ export function KuzensApp() {
     async function syncMessages(initial = false) {
       if (initial) setLoadingMessages(true);
       try {
-        const after = initial ? "" : messageSyncAt.current[activeChannel];
         const query = new URLSearchParams({
           channel: activeChannel,
           server: activeServerId,
         });
-        if (after) query.set("after", after);
         const response = await apiFetch(`/api/messages?${query.toString()}`);
         if (!response.ok) return;
         const data = (await response.json()) as {
@@ -447,7 +552,6 @@ export function KuzensApp() {
               ...mergeMessages(currentChannel, data.messages || []),
             ];
           });
-          if (data.syncedAt) messageSyncAt.current[activeChannel] = data.syncedAt;
         }
       } finally {
         if (!cancelled && initial) setLoadingMessages(false);
@@ -524,6 +628,38 @@ export function KuzensApp() {
     const timer = window.setTimeout(() => setToast(null), 2800);
     return () => window.clearTimeout(timer);
   }, [toast]);
+
+  useEffect(() => {
+    if (!profile) return;
+    void loadNotifications();
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") void loadNotifications();
+    }, 15_000);
+    return () => window.clearInterval(timer);
+  }, [profile]);
+
+  useEffect(() => {
+    function closeMenu() {
+      setContextMenu(null);
+    }
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") closeMenu();
+    }
+    window.addEventListener("pointerdown", closeMenu);
+    window.addEventListener("resize", closeMenu);
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      window.removeEventListener("pointerdown", closeMenu);
+      window.removeEventListener("resize", closeMenu);
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, []);
+
+  useEffect(() => {
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("/sw.js").catch(() => undefined);
+    }
+  }, []);
 
   useEffect(() => {
     const connections = peerConnections.current;
@@ -924,6 +1060,233 @@ export function KuzensApp() {
     );
   }
 
+  function openContextMenu(
+    event: ReactMouseEvent,
+    item: Omit<ContextMenuState, "x" | "y">,
+  ) {
+    event.preventDefault();
+    event.stopPropagation();
+    setContextMenu({
+      ...item,
+      x: Math.min(event.clientX, window.innerWidth - 230),
+      y: Math.min(event.clientY, window.innerHeight - 360),
+    });
+  }
+
+  function insertMention(tag: string) {
+    setDraft((current) => {
+      if (/(?:^|\s)@[a-z0-9_]*$/i.test(current)) {
+        return `${current.replace(/@[a-z0-9_]*$/i, tag)} `;
+      }
+      return `${current}${current && !current.endsWith(" ") ? " " : ""}${tag} `;
+    });
+    setContextMenu(null);
+  }
+
+  async function toggleReaction(message: ChatMessage, emoji: string) {
+    const response = await apiFetch("/api/reactions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        serverId: activeServerId,
+        messageId: message.id,
+        emoji,
+      }),
+    });
+    if (!response.ok) {
+      setToast({ text: await responseError(response, "Tepki eklenemedi."), tone: "danger" });
+      return;
+    }
+    const { active } = (await response.json()) as { active: boolean };
+    setMessages((current) =>
+      current.map((item) => {
+        if (item.id !== message.id) return item;
+        const reactions = [...(item.reactions || [])];
+        const existing = reactions.find((reaction) => reaction.emoji === emoji);
+        if (existing) {
+          existing.count += active ? 1 : -1;
+          existing.reactedByMe = active;
+          return { ...item, reactions: reactions.filter((reaction) => reaction.count > 0) };
+        }
+        return {
+          ...item,
+          reactions: active
+            ? [...reactions, { emoji, count: 1, reactedByMe: true }]
+            : reactions,
+        };
+      }),
+    );
+  }
+
+  async function togglePin(message: ChatMessage) {
+    const response = await apiFetch("/api/messages", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        id: message.id,
+        serverId: activeServerId,
+        action: "pin",
+        pinned: !message.pinned,
+      }),
+    });
+    if (!response.ok) {
+      setToast({ text: await responseError(response, "Mesaj sabitlenemedi."), tone: "danger" });
+      return;
+    }
+    setMessages((current) =>
+      current.map((item) =>
+        item.id === message.id ? { ...item, pinned: !message.pinned } : item,
+      ),
+    );
+    setToast({ text: message.pinned ? "Sabitleme kaldırıldı." : "Mesaj sabitlendi.", tone: "success" });
+  }
+
+  async function copyMessageLink(message: ChatMessage) {
+    const url = new URL(window.location.href);
+    url.searchParams.set("sunucu", activeServerId);
+    url.searchParams.set("kanal", message.channelId);
+    url.hash = `mesaj-${message.id}`;
+    await navigator.clipboard.writeText(url.toString());
+    setToast({ text: "Mesaj bağlantısı kopyalandı.", tone: "success" });
+  }
+
+  async function requestFriend(member: Member) {
+    const response = await apiFetch("/api/friends", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "request", username: member.tag.slice(1) }),
+    });
+    setToast({
+      text: response.ok
+        ? `${member.name} kullanıcısına arkadaşlık isteği gönderildi.`
+        : await responseError(response, "Arkadaşlık isteği gönderilemedi."),
+      tone: response.ok ? "success" : "danger",
+    });
+  }
+
+  function openChannelSettings(channel: Channel) {
+    setActiveChannel(channel.id);
+    setChannelSettingsName(channel.name);
+    setChannelSettingsTopic(channel.topic || "");
+    setChannelSlowMode(channel.slowModeSeconds || 0);
+    setContextMenu(null);
+    setModal("channelSettings");
+  }
+
+  async function saveChannelSettings(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selected) return;
+    const response = await apiFetch("/api/channels", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        id: selected.id,
+        serverId: activeServerId,
+        name: channelSettingsName,
+        topic: channelSettingsTopic,
+        slowModeSeconds: channelSlowMode,
+      }),
+    });
+    if (!response.ok) {
+      setToast({ text: await responseError(response, "Kanal ayarları kaydedilemedi."), tone: "danger" });
+      return;
+    }
+    const data = (await response.json()) as { channel: Channel };
+    setChannels((current) =>
+      current.map((channel) => (channel.id === data.channel.id ? data.channel : channel)),
+    );
+    setModal(null);
+    setToast({ text: "Kanal ayarları kaydedildi.", tone: "success" });
+  }
+
+  async function duplicateChannel(channel: Channel) {
+    const response = await apiFetch("/api/channels", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        name: `${channel.name}-kopya`.slice(0, 32),
+        kind: channel.kind,
+        serverId: activeServerId,
+      }),
+    });
+    if (!response.ok) {
+      setToast({ text: await responseError(response, "Kanal çoğaltılamadı."), tone: "danger" });
+      return;
+    }
+    const data = (await response.json()) as { channel: Channel };
+    setChannels((current) => [...current, data.channel]);
+    setToast({ text: "Kanal çoğaltıldı.", tone: "success" });
+  }
+
+  async function loadNotifications() {
+    const response = await apiFetch("/api/notifications");
+    if (!response.ok) return;
+    const data = (await response.json()) as { notifications?: MentionNotification[] };
+    setNotifications(data.notifications || []);
+  }
+
+  async function openNotification(notification: MentionNotification) {
+    await apiFetch("/api/notifications", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id: notification.id }),
+    });
+    if (notification.serverId !== activeServerId) {
+      await chooseServer(notification.serverId);
+    }
+    setActiveChannel(notification.channelId);
+    setModal(null);
+    setNotifications((current) => current.filter((item) => item.id !== notification.id));
+    window.setTimeout(() => {
+      document.getElementById(`mesaj-${notification.messageId}`)?.scrollIntoView({
+        block: "center",
+        behavior: "smooth",
+      });
+    }, 500);
+  }
+
+  function openProfileSettings() {
+    if (!profile) return;
+    setProfileDisplayName(profile.displayName);
+    setProfileUsername(profile.username);
+    setProfileBio(profile.bio || "");
+    setProfileCustomStatus(profile.customStatus || "");
+    setProfilePresence(profile.presenceStatus || "online");
+    setModal("profile");
+  }
+
+  async function saveProfile(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setProfileSaving(true);
+    try {
+      const response = await apiFetch("/api/profile", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          displayName: profileDisplayName,
+          username: profileUsername,
+          bio: profileBio,
+          customStatus: profileCustomStatus,
+          presenceStatus: profilePresence,
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(await responseError(response, "Profil kaydedilemedi."));
+      }
+      const data = (await response.json()) as { profile: Profile };
+      setProfile(data.profile);
+      setModal(null);
+      setToast({ text: "Profil ve durumun güncellendi.", tone: "success" });
+    } catch (error) {
+      setToast({
+        text: error instanceof Error ? error.message : "Profil kaydedilemedi.",
+        tone: "danger",
+      });
+    } finally {
+      setProfileSaving(false);
+    }
+  }
+
   async function createChannel(event: FormEvent) {
     event.preventDefault();
     const name = newChannelName.trim().toLocaleLowerCase("tr-TR").replace(/\s+/g, "-");
@@ -963,42 +1326,22 @@ export function KuzensApp() {
     }
   }
 
-  async function renameChannel() {
-    if (!selected || !canManageChannels) return;
-    const name = window.prompt("Yeni oda adı", selected.name)?.trim();
-    if (!name || name === selected.name) return;
-    const response = await apiFetch("/api/channels", {
-      method: "PATCH",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ id: selected.id, name, serverId: activeServerId }),
-    });
-    if (!response.ok) {
-      setToast({ text: await responseError(response, "Oda güncellenemedi."), tone: "danger" });
-      return;
-    }
-    const data = (await response.json()) as { channel: Channel };
-    setChannels((current) =>
-      current.map((channel) => (channel.id === data.channel.id ? data.channel : channel)),
-    );
-    setToast({ text: "Oda adı güncellendi.", tone: "success" });
-  }
-
-  async function deleteChannel() {
-    if (!selected || !canManageChannels || !window.confirm(`#${selected.name} silinsin mi?`)) {
+  async function deleteChannel(channel: Channel | undefined = selected) {
+    if (!channel || !canManageChannels || !window.confirm(`#${channel.name} silinsin mi?`)) {
       return;
     }
     const response = await apiFetch("/api/channels", {
       method: "DELETE",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ id: selected.id, serverId: activeServerId }),
+      body: JSON.stringify({ id: channel.id, serverId: activeServerId }),
     });
     if (!response.ok) {
       setToast({ text: await responseError(response, "Oda silinemedi."), tone: "danger" });
       return;
     }
-    setChannels((current) => current.filter((channel) => channel.id !== selected.id));
+    setChannels((current) => current.filter((item) => item.id !== channel.id));
     setActiveChannel(
-      channels.find((channel) => channel.id !== selected.id)?.id || "genel",
+      channels.find((item) => item.id !== channel.id)?.id || "genel",
     );
     setToast({ text: "Oda silindi.", tone: "success" });
   }
@@ -1312,6 +1655,7 @@ export function KuzensApp() {
     setMessages([]);
     setMembers([]);
     setPermissions(0);
+    setShowPinnedOnly(false);
   }
 
   function chooseChannel(channel: Channel) {
@@ -1338,6 +1682,9 @@ export function KuzensApp() {
             aria-label={`${server.name} topluluğu`}
             key={server.id}
             onClick={() => void chooseServer(server.id)}
+            onContextMenu={(event) =>
+              openContextMenu(event, { kind: "server" })
+            }
           >
             {server.icon}
             {server.id === activeServerId && <i />}
@@ -1356,7 +1703,10 @@ export function KuzensApp() {
       </aside>
 
       <aside className={`channel-sidebar ${mobileChannels ? "mobile-open" : ""}`}>
-        <header className="server-header">
+        <header
+          className="server-header"
+          onContextMenu={(event) => openContextMenu(event, { kind: "server" })}
+        >
           <div>
             <span className="eyebrow">TOPLULUK</span>
             <strong>{activeServer.name}</strong>
@@ -1387,6 +1737,9 @@ export function KuzensApp() {
                 className={`channel-row ${activeChannel === channel.id ? "active" : ""}`}
                 key={channel.id}
                 onClick={() => chooseChannel(channel)}
+                onContextMenu={(event) =>
+                  openContextMenu(event, { kind: "channel", channel })
+                }
               >
                 <span className="channel-symbol">#</span>
                 <span>{channel.name}</span>
@@ -1407,6 +1760,9 @@ export function KuzensApp() {
                 <button
                   className={`channel-row ${activeChannel === channel.id ? "active" : ""}`}
                   onClick={() => chooseChannel(channel)}
+                  onContextMenu={(event) =>
+                    openContextMenu(event, { kind: "channel", channel })
+                  }
                 >
                   <span className="channel-symbol">◖</span>
                   <span>{channel.name}</span>
@@ -1421,7 +1777,12 @@ export function KuzensApp() {
                     {members
                       .filter((member) => member.voiceChannelId === channel.id)
                       .map((member) => (
-                        <span key={member.id}>
+                        <span
+                          key={member.id}
+                          onContextMenu={(event) =>
+                            openContextMenu(event, { kind: "member", member })
+                          }
+                        >
                           <Avatar name={member.name} size="sm" tone={toneFor(member.id)} />
                           {member.name}
                           {member.sharing && <i>YAYIN</i>}
@@ -1444,9 +1805,12 @@ export function KuzensApp() {
           </section>
         )}
 
-        <footer className="user-dock">
+        <footer className="user-dock" onDoubleClick={openProfileSettings}>
           <Avatar name={profile?.displayName || "Savaş"} tone="purple" online />
-          <div><strong>{profile?.displayName || "Savaş"}</strong><small>@{profile?.username || "savas"}</small></div>
+          <button className="user-profile-button" onClick={openProfileSettings}>
+            <strong>{profile?.displayName || "Savaş"}</strong>
+            <small>{profile?.customStatus || `@${profile?.username || "savas"}`}</small>
+          </button>
           <button className={muted ? "control-active" : ""} onClick={toggleMute} aria-label="Mikrofonu aç veya kapat">μ</button>
           <button className={deafened ? "control-active" : ""} onClick={() => setDeafened((value) => !value)} aria-label="Sesi aç veya kapat">◉</button>
           <a className="dock-link" href="/hukuk" aria-label="Hukuk ve güven merkezi">§</a>
@@ -1461,7 +1825,11 @@ export function KuzensApp() {
           <span className="header-channel-icon">{selected?.kind === "voice" ? "◖" : "#"}</span>
           <div className="channel-heading">
             <strong>{selected?.name || "genel"}</strong>
-            <span>{selected?.kind === "voice" ? "Sesli buluşma odası" : "Kuzens topluluğunun ortak alanı"}</span>
+            <span>
+              {selected?.kind === "voice"
+                ? selected.topic || "Sesli buluşma odası"
+                : selected?.topic || "Kuzens topluluğunun ortak alanı"}
+            </span>
           </div>
           <div className="header-spacer" />
           {selected?.kind === "voice" ? (
@@ -1474,7 +1842,7 @@ export function KuzensApp() {
               <button onClick={openRoles}>Yetkiler</button>
               {canManageChannels && (
                 <>
-                  <button onClick={() => void renameChannel()}>Düzenle</button>
+                  <button onClick={() => selected && openChannelSettings(selected)}>Düzenle</button>
                   {selected?.id !== "genel" && (
                     <button onClick={() => void deleteChannel()}>Sil</button>
                   )}
@@ -1482,6 +1850,27 @@ export function KuzensApp() {
               )}
             </div>
           )}
+          {selected?.kind === "text" && (
+            <button
+              className={`notification-button ${showPinnedOnly ? "active" : ""}`}
+              onClick={() => setShowPinnedOnly((value) => !value)}
+              aria-label={showPinnedOnly ? "Tüm mesajları göster" : "Sabitlenen mesajları göster"}
+              title="Sabitlenen mesajlar"
+            >
+              ⌖
+            </button>
+          )}
+          <button
+            className="notification-button"
+            onClick={() => {
+              setModal("notifications");
+              void loadNotifications();
+            }}
+            aria-label={`Bildirimler, ${notifications.length} okunmamış`}
+          >
+            ♢
+            {notifications.length > 0 && <b>{Math.min(99, notifications.length)}</b>}
+          </button>
           <label className="search-box">
             <span>⌕</span>
             <input
@@ -1507,7 +1896,13 @@ export function KuzensApp() {
 
             <div className="speaker-grid">
               {visibleVoiceMembers.map((member) => (
-                <article className={`speaker-card ${member.id === profile?.id ? "speaking" : ""}`} key={member.id}>
+                <article
+                  className={`speaker-card ${member.id === profile?.id ? "speaking" : ""}`}
+                  key={member.id}
+                  onContextMenu={(event) =>
+                    openContextMenu(event, { kind: "member", member })
+                  }
+                >
                   <div className="speaker-orbit">
                     <Avatar name={member.name} tone={toneFor(member.id)} size="lg" />
                   </div>
@@ -1565,7 +1960,14 @@ export function KuzensApp() {
                 const previous = visibleMessages[index - 1];
                 const compact = previous?.authorTag === message.authorTag;
                 return (
-                  <article className={`message ${compact ? "compact" : ""}`} key={message.id}>
+                  <article
+                    id={`mesaj-${message.id}`}
+                    className={`message ${compact ? "compact" : ""} ${message.mentionedMe ? "mentioned" : ""} ${message.pinned ? "pinned" : ""}`}
+                    key={message.id}
+                    onContextMenu={(event) =>
+                      openContextMenu(event, { kind: "message", message })
+                    }
+                  >
                     {!compact && <Avatar name={message.authorName} tone={message.authorName === "Savaş" ? "purple" : message.authorName === "Ece" ? "pink" : message.authorName === "Batu" ? "blue" : "orange"} />}
                     <div className="message-content">
                       {!compact && (
@@ -1590,16 +1992,43 @@ export function KuzensApp() {
                         </button>
                       )}
                       <p className={message.deletedAt ? "deleted-message" : ""}>
-                        {message.content}
+                        <MessageText
+                          content={message.content}
+                          members={members}
+                          onMention={insertMention}
+                        />
                         {message.editedAt && !message.deletedAt && <small> (düzenlendi)</small>}
                       </p>
                       {!message.deletedAt && <LinkEmbed content={message.content} />}
+                      {!message.deletedAt && Boolean(message.reactions?.length) && (
+                        <div className="message-reactions">
+                          {message.reactions?.map((reaction) => (
+                            <button
+                              type="button"
+                              className={reaction.reactedByMe ? "active" : ""}
+                              key={reaction.emoji}
+                              onClick={() => void toggleReaction(message, reaction.emoji)}
+                            >
+                              <span>{reaction.emoji}</span>
+                              {reaction.count}
+                            </button>
+                          ))}
+                        </div>
+                      )}
                     </div>
                     {!message.id.startsWith("local-") && !message.deletedAt && (
                       <div className="message-tools">
-                        <button aria-label="Düzenle" onClick={() => void editMessage(message)}>✎</button>
+                        {(message.authorProfileId === profile?.id ||
+                          message.authorTag === `@${profile?.username}`) && (
+                          <button aria-label="Düzenle" onClick={() => void editMessage(message)}>✎</button>
+                        )}
+                        <button aria-label="Tepki ekle" onClick={() => void toggleReaction(message, "👍")}>☺</button>
                         <button aria-label="Yanıtla" onClick={() => setReplyingTo(message)}>↩</button>
-                        <button aria-label="Sil" onClick={() => void deleteMessage(message)}>×</button>
+                        {(canManageMessages ||
+                          message.authorProfileId === profile?.id ||
+                          message.authorTag === `@${profile?.username}`) && (
+                          <button aria-label="Sil" onClick={() => void deleteMessage(message)}>×</button>
+                        )}
                       </div>
                     )}
                   </article>
@@ -1615,13 +2044,33 @@ export function KuzensApp() {
             </div>
 
             <form className="composer-wrap" onSubmit={sendMessage}>
+              {mentionCandidates.length > 0 && (
+                <div className="mention-suggestions">
+                  <span>ETİKETLE</span>
+                  {mentionCandidates.map((member) => (
+                    <button
+                      type="button"
+                      key={member.id}
+                      onClick={() => insertMention(member.tag)}
+                    >
+                      <Avatar name={member.name} tone={toneFor(member.id)} size="sm" />
+                      <span><strong>{member.name}</strong><small>{member.tag}</small></span>
+                    </button>
+                  ))}
+                </div>
+              )}
               {replyingTo ? (
                 <div className="reply-hint active">
                   <span>↩</span> {replyingTo.authorName} kullanıcısına yanıt veriyorsun.
                   <button type="button" onClick={() => setReplyingTo(null)}>İptal</button>
                 </div>
               ) : (
-                <div className="reply-hint"><span>✦</span> Kuzens’e hoş geldin — güzel bir şey söyle.</div>
+                <div className="reply-hint">
+                  <span>✦</span> Kuzens’e hoş geldin — güzel bir şey söyle.
+                  {(selected?.slowModeSeconds || 0) > 0 && (
+                    <b> Yavaş mod: {selected?.slowModeSeconds} sn</b>
+                  )}
+                </div>
               )}
               <div className="composer">
                 <button type="button" aria-label="Dosya ekle">+</button>
@@ -1655,7 +2104,13 @@ export function KuzensApp() {
         <div className="member-list">
           <span className="member-group">ÇEVRİMİÇİ — {onlineMembers.length}</span>
           {onlineMembers.map((member) => (
-            <div className="member-row" key={member.id}>
+            <div
+              className="member-row"
+              key={member.id}
+              onContextMenu={(event) =>
+                openContextMenu(event, { kind: "member", member })
+              }
+            >
               <Avatar name={member.name} tone={toneFor(member.id)} online />
               <span className="member-copy"><strong>{member.name}</strong><small>{memberStatus(member)}</small></span>
               {member.id !== profile?.id && !member.role?.id.endsWith(":owner") && (
@@ -1685,7 +2140,13 @@ export function KuzensApp() {
           ))}
           <span className="member-group">ÇEVRİMDIŞI — {offlineMembers.length}</span>
           {offlineMembers.map((member) => (
-            <div className="member-row offline" key={member.id}>
+            <div
+              className="member-row offline"
+              key={member.id}
+              onContextMenu={(event) =>
+                openContextMenu(event, { kind: "member", member })
+              }
+            >
               <Avatar name={member.name} tone={toneFor(member.id)} online={false} />
               <span className="member-copy"><strong>{member.name}</strong><small>{memberStatus(member)}</small></span>
               {member.id !== profile?.id && !member.role?.id.endsWith(":owner") && (
@@ -1981,6 +2442,194 @@ export function KuzensApp() {
         </div>
       )}
 
+      {modal === "channelSettings" && selected && (
+        <div className="modal-backdrop" onMouseDown={() => setModal(null)}>
+          <form
+            className="modal-card settings-modal"
+            onSubmit={saveChannelSettings}
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <button type="button" className="modal-close" onClick={() => setModal(null)} aria-label="Kapat">×</button>
+            <span className="eyebrow">KANAL AYARLARI</span>
+            <h2>#{selected.name}</h2>
+            <p>Kanalın adını, açıklamasını ve mesaj hızını buradan yönet.</p>
+            <label className="settings-field">
+              <span>Kanal adı</span>
+              <input
+                required
+                minLength={1}
+                maxLength={32}
+                value={channelSettingsName}
+                onChange={(event) => setChannelSettingsName(event.target.value)}
+              />
+            </label>
+            <label className="settings-field">
+              <span>Kanal konusu</span>
+              <textarea
+                maxLength={160}
+                rows={3}
+                value={channelSettingsTopic}
+                onChange={(event) => setChannelSettingsTopic(event.target.value)}
+                placeholder="Bu kanalda neler konuşulur?"
+              />
+            </label>
+            {selected.kind === "text" && (
+              <label className="settings-field">
+                <span>Yavaş mod</span>
+                <select
+                  value={channelSlowMode}
+                  onChange={(event) => setChannelSlowMode(Number(event.target.value))}
+                >
+                  <option value={0}>Kapalı</option>
+                  <option value={5}>5 saniye</option>
+                  <option value={10}>10 saniye</option>
+                  <option value={30}>30 saniye</option>
+                  <option value={60}>1 dakika</option>
+                  <option value={300}>5 dakika</option>
+                  <option value={3600}>1 saat</option>
+                </select>
+              </label>
+            )}
+            <div className="modal-actions">
+              <button type="button" onClick={() => setModal(null)}>Vazgeç</button>
+              <button className="primary-button">Değişiklikleri kaydet</button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {modal === "profile" && profile && (
+        <div className="modal-backdrop" onMouseDown={() => setModal(null)}>
+          <form
+            className="modal-card profile-settings-modal"
+            onSubmit={saveProfile}
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <button type="button" className="modal-close" onClick={() => setModal(null)} aria-label="Kapat">×</button>
+            <div className="profile-settings-preview">
+              <Avatar name={profileDisplayName || profile.displayName} tone="purple" size="lg" online />
+              <div>
+                <strong>{profileDisplayName || profile.displayName}</strong>
+                <span>@{profileUsername || profile.username}</span>
+                <small>{profileCustomStatus || "Bir durum belirle"}</small>
+              </div>
+            </div>
+            <span className="eyebrow">KULLANICI AYARLARI</span>
+            <h2>Profilini düzenle</h2>
+            <div className="settings-grid">
+              <label className="settings-field">
+                <span>Görünen ad</span>
+                <input minLength={2} maxLength={32} required value={profileDisplayName} onChange={(event) => setProfileDisplayName(event.target.value)} />
+              </label>
+              <label className="settings-field">
+                <span>Kullanıcı adı</span>
+                <input minLength={3} maxLength={24} pattern="[a-z0-9_]+" required value={profileUsername} onChange={(event) => setProfileUsername(event.target.value.toLocaleLowerCase("en-US").replace(/[^a-z0-9_]/g, ""))} />
+              </label>
+            </div>
+            <label className="settings-field">
+              <span>Özel durum</span>
+              <input maxLength={80} value={profileCustomStatus} onChange={(event) => setProfileCustomStatus(event.target.value)} placeholder="Ne yapıyorsun?" />
+            </label>
+            <label className="settings-field">
+              <span>Çevrimiçi görünüm</span>
+              <select value={profilePresence} onChange={(event) => setProfilePresence(event.target.value as typeof profilePresence)}>
+                <option value="online">Çevrimiçi</option>
+                <option value="idle">Boşta</option>
+                <option value="dnd">Rahatsız etmeyin</option>
+                <option value="invisible">Görünmez</option>
+              </select>
+            </label>
+            <label className="settings-field">
+              <span>Hakkımda</span>
+              <textarea maxLength={190} rows={4} value={profileBio} onChange={(event) => setProfileBio(event.target.value)} placeholder="Kendinden biraz bahset…" />
+            </label>
+            <button className="primary-button" disabled={profileSaving}>
+              {profileSaving ? "Kaydediliyor…" : "Profili kaydet"}
+            </button>
+          </form>
+        </div>
+      )}
+
+      {modal === "memberProfile" && viewingMember && (
+        <div className="modal-backdrop" onMouseDown={() => setModal(null)}>
+          <section
+            className="modal-card member-profile-modal"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <button className="modal-close" onClick={() => setModal(null)} aria-label="Kapat">×</button>
+            <div className="member-profile-banner" />
+            <Avatar
+              name={viewingMember.name}
+              tone={toneFor(viewingMember.id)}
+              size="lg"
+              online={viewingMember.online}
+            />
+            <h2>{viewingMember.name}</h2>
+            <span className="member-profile-tag">{viewingMember.tag}</span>
+            <div className="member-profile-details">
+              <div>
+                <span>DURUM</span>
+                <p>{memberStatus(viewingMember)}</p>
+              </div>
+              <div>
+                <span>HAKKINDA</span>
+                <p>{viewingMember.bio || "Bu kullanıcı henüz kendinden bahsetmedi."}</p>
+              </div>
+              <div>
+                <span>ROL</span>
+                <p style={{ color: viewingMember.role?.color || "#bcb4c7" }}>
+                  {viewingMember.role?.name || "Kuzen"}
+                </p>
+              </div>
+            </div>
+            <div className="member-profile-actions">
+              <button onClick={() => { insertMention(viewingMember.tag); setModal(null); }}>@ Bahset</button>
+              {viewingMember.id !== profile?.id && (
+                <button onClick={() => void requestFriend(viewingMember)}>Arkadaş ekle</button>
+              )}
+            </div>
+          </section>
+        </div>
+      )}
+
+      {modal === "notifications" && (
+        <div className="modal-backdrop" onMouseDown={() => setModal(null)}>
+          <section
+            className="modal-card notifications-modal"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <button className="modal-close" onClick={() => setModal(null)} aria-label="Kapat">×</button>
+            <span className="eyebrow">GELEN KUTUSU</span>
+            <h2>Bahsetmeler ve yanıtlar</h2>
+            <p>Yalnızca sana hedeflenen bildirimler burada görünür.</p>
+            <div className="notification-list">
+              {notifications.length ? (
+                notifications.map((notification) => (
+                  <button
+                    key={notification.id}
+                    onClick={() => void openNotification(notification)}
+                  >
+                    <span className="notification-avatar">{initials(notification.authorName)}</span>
+                    <span>
+                      <strong>{notification.authorName}</strong>
+                      <small>{notification.serverName} · #{notification.channelName}</small>
+                      <p>{notification.content}</p>
+                    </span>
+                    <time>{timeLabel(notification.createdAt)}</time>
+                  </button>
+                ))
+              ) : (
+                <div className="empty-search">
+                  <span>✓</span>
+                  <strong>Hepsini okudun</strong>
+                  <p>Yeni bir bahsetme olduğunda burada göreceksin.</p>
+                </div>
+              )}
+            </div>
+          </section>
+        </div>
+      )}
+
       {profile === undefined && (
         <div className="registration-gate loading">
           <div className="registration-loader"><span>K.</span><p>Hesabın hazırlanıyor…</p></div>
@@ -2038,6 +2687,93 @@ export function KuzensApp() {
               <p className="registration-foot">Gizliliğini nasıl koruduğumuzu <a href="/hukuk/gizlilik" target="_blank">Gizlilik Politikası</a>nda anlatıyoruz.</p>
             </form>
           </div>
+        </div>
+      )}
+
+      {contextMenu && (
+        <div
+          className="context-menu"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={() => window.setTimeout(() => setContextMenu(null), 0)}
+          role="menu"
+        >
+          {contextMenu.kind === "server" && (
+            <>
+              <span className="context-title">{activeServer.name}</span>
+              <button onClick={() => void copyInvite()}><span>↗</span>Davet oluştur</button>
+              <button onClick={() => { setNewChannelKind("text"); setModal("channel"); }}><span>#</span>Metin kanalı oluştur</button>
+              <button onClick={() => { setNewChannelKind("voice"); setModal("channel"); }}><span>◖</span>Ses kanalı oluştur</button>
+              <i />
+              <button onClick={openRoles}><span>♢</span>Roller ve yetkiler</button>
+            </>
+          )}
+          {contextMenu.kind === "channel" && contextMenu.channel && (
+            <>
+              <span className="context-title">#{contextMenu.channel.name}</span>
+              <button onClick={() => { chooseChannel(contextMenu.channel!); setToast({ text: "Kanal okundu işaretlendi.", tone: "success" }); }}><span>✓</span>Okundu işaretle</button>
+              <button onClick={() => void copyInvite()}><span>↗</span>Davet oluştur</button>
+              <button onClick={() => { void navigator.clipboard.writeText(`${window.location.origin}/?sunucu=${activeServerId}&kanal=${contextMenu.channel!.id}`); setToast({ text: "Kanal bağlantısı kopyalandı.", tone: "success" }); }}><span>⛓</span>Bağlantıyı kopyala</button>
+              {canManageChannels && (
+                <>
+                  <i />
+                  <button onClick={() => openChannelSettings(contextMenu.channel!)}><span>⚙</span>Kanalı düzenle</button>
+                  <button onClick={() => void duplicateChannel(contextMenu.channel!)}><span>＋</span>Kanalı çoğalt</button>
+                  {contextMenu.channel.id !== "genel" && !contextMenu.channel.id.endsWith(":genel") && (
+                    <button className="danger" onClick={() => void deleteChannel(contextMenu.channel)}><span>×</span>Kanalı sil</button>
+                  )}
+                </>
+              )}
+            </>
+          )}
+          {contextMenu.kind === "message" && contextMenu.message && (
+            <>
+              <span className="context-title">{contextMenu.message.authorName}</span>
+              <button onClick={() => setReplyingTo(contextMenu.message!)}><span>↩</span>Yanıtla</button>
+              <div className="context-reactions">
+                {["👍", "❤️", "😂", "😮", "🔥"].map((emoji) => (
+                  <button key={emoji} onClick={() => void toggleReaction(contextMenu.message!, emoji)}>{emoji}</button>
+                ))}
+              </div>
+              {canManageMessages && (
+                <button onClick={() => void togglePin(contextMenu.message!)}><span>⌖</span>{contextMenu.message.pinned ? "Sabitlemeyi kaldır" : "Mesajı sabitle"}</button>
+              )}
+              {(contextMenu.message.authorProfileId === profile?.id ||
+                contextMenu.message.authorTag === `@${profile?.username}`) && (
+                <button onClick={() => void editMessage(contextMenu.message!)}><span>✎</span>Mesajı düzenle</button>
+              )}
+              <i />
+              <button onClick={() => { void navigator.clipboard.writeText(contextMenu.message!.content); setToast({ text: "Mesaj metni kopyalandı.", tone: "success" }); }}><span>▣</span>Metni kopyala</button>
+              <button onClick={() => void copyMessageLink(contextMenu.message!)}><span>⛓</span>Mesaj bağlantısını kopyala</button>
+              {(canManageMessages ||
+                contextMenu.message.authorProfileId === profile?.id ||
+                contextMenu.message.authorTag === `@${profile?.username}`) && (
+                <button className="danger" onClick={() => void deleteMessage(contextMenu.message!)}><span>×</span>Mesajı sil</button>
+              )}
+            </>
+          )}
+          {contextMenu.kind === "member" && contextMenu.member && (
+            <>
+              <div className="context-member">
+                <Avatar name={contextMenu.member.name} tone={toneFor(contextMenu.member.id)} size="sm" online={contextMenu.member.online} />
+                <span><strong>{contextMenu.member.name}</strong><small>{contextMenu.member.tag}</small></span>
+              </div>
+              <button onClick={() => { setViewingMember(contextMenu.member!); setModal("memberProfile"); }}><span>◉</span>Profili görüntüle</button>
+              <button onClick={() => insertMention(contextMenu.member!.tag)}><span>@</span>Bahset</button>
+              {contextMenu.member.id !== profile?.id && (
+                <button onClick={() => void requestFriend(contextMenu.member!)}><span>＋</span>Arkadaş ekle</button>
+              )}
+              {(canKickMembers || canBanMembers) &&
+                contextMenu.member.id !== profile?.id &&
+                !contextMenu.member.role?.id.endsWith(":owner") && (
+                  <>
+                    <i />
+                    {canKickMembers && <button className="danger" onClick={() => void moderateMember(contextMenu.member!, "kick")}><span>↗</span>Topluluktan çıkar</button>}
+                    {canBanMembers && <button className="danger" onClick={() => void moderateMember(contextMenu.member!, "ban")}><span>!</span>Yasakla</button>}
+                  </>
+                )}
+            </>
+          )}
         </div>
       )}
 

@@ -56,7 +56,8 @@ export async function GET(request: Request) {
         const lastSeen = membership?.lastSeenAt
           ? new Date(membership.lastSeenAt).getTime()
           : 0;
-        const online = now - lastSeen < 90_000;
+        const online =
+          profile.presenceStatus !== "invisible" && now - lastSeen < 90_000;
         const role =
           roleById.get(assignmentByTag.get(`@${profile.username}`)?.roleId || "") ||
           roleById.get(`${serverId}:member`);
@@ -68,6 +69,9 @@ export async function GET(request: Request) {
           lastSeenAt: membership?.lastSeenAt ?? null,
           voiceChannelId: membership?.voiceChannelId ?? null,
           sharing: membership?.sharing ?? false,
+          customStatus: profile.customStatus,
+          presenceStatus: online ? profile.presenceStatus : "offline",
+          bio: profile.bio,
           role: role ? { id: role.id, name: role.name, color: role.color } : null,
         };
       })
