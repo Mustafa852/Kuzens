@@ -1,5 +1,6 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, gt, inArray, isNull, or } from "drizzle-orm";
 import {
+  auraMemberships,
   auditLogs,
   channels,
   invites,
@@ -31,7 +32,7 @@ import {
 } from "@/lib/security";
 import { getDb } from "@/db";
 
-type ServerPayload = { id?: string; name?: string };
+type ServerPayload = { id?: string; name?: string; icon?: string };
 
 function serverSlug(name: string) {
   const base = name
@@ -80,8 +81,29 @@ export async function POST(request: Request) {
       .select({ id: servers.id })
       .from(servers)
       .where(eq(servers.ownerProfileId, profile.id));
-    if (owned.length >= 5) {
-      return apiJson({ error: "Ücretsiz sürümde en fazla 5 topluluk kurabilirsin." }, { status: 400 });
+    const [aura] = await db
+      .select({ id: auraMemberships.id })
+      .from(auraMemberships)
+      .where(
+        and(
+          eq(auraMemberships.profileId, profile.id),
+          or(
+            isNull(auraMemberships.expiresAt),
+            gt(auraMemberships.expiresAt, new Date().toISOString()),
+          ),
+        ),
+      )
+      .limit(1);
+    const serverLimit = aura || profile.isOwner ? 10 : 5;
+    if (owned.length >= serverLimit) {
+      return apiJson(
+        {
+          error: aura || profile.isOwner
+            ? "Kuzens Aura ile en fazla 10 topluluk kurabilirsin."
+            : "Ücretsiz sürümde en fazla 5 topluluk kurabilirsin. Kuzens Aura ile sınır 10 olur.",
+        },
+        { status: 400 },
+      );
     }
     const id = serverSlug(name);
     const now = new Date().toISOString();
@@ -122,6 +144,32 @@ export async function POST(request: Request) {
     });
     await writeAudit(profile.id, "server.create", id, name, id);
     return apiJson({ server }, { status: 201 });
+  } catch (error) {
+    return apiError(error);
+  }
+}
+
+export async function PATCH(request: Request) {
+  try {
+    assertTrustedMutation(request);
+    const identity = requireIdentity(request);
+    const profile = await requireProfile(identity);
+    await enforceRateLimit(request, "server-update", identity.email, 20, 60 * 60_000);
+    const payload = await readJson<ServerPayload>(request, 4_096);
+    const id = cleanText(payload.id, { max: 80 });
+    const name = cleanText(payload.name, { min: 2, max: 40 });
+    const icon = cleanText(payload.icon || name.slice(0, 2), { min: 1, max: 3 });
+    const db = getDb();
+    const [server] = await db.select().from(servers).where(eq(servers.id, id)).limit(1);
+    const ownsServer =
+      server?.ownerProfileId === profile.id ||
+      (id === DEFAULT_SERVER_ID && profile.isOwner);
+    if (!server || !ownsServer) {
+      return apiJson({ error: "Topluluk ayarlarını değiştirme yetkin yok." }, { status: 403 });
+    }
+    await db.update(servers).set({ name, icon }).where(eq(servers.id, id));
+    await writeAudit(profile.id, "server.update", id, `${name}|${icon}`, id);
+    return apiJson({ server: { ...server, name, icon } });
   } catch (error) {
     return apiError(error);
   }

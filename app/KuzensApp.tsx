@@ -122,6 +122,33 @@ type MentionNotification = {
   createdAt: string;
 };
 
+type AuraMembership = {
+  id: string;
+  profileId: string;
+  source: "code" | "owner" | "purchase";
+  expiresAt: string | null;
+  active: boolean;
+};
+
+type AuraCode = {
+  id: string;
+  codeHint: string;
+  durationDays: number;
+  maxUses: number;
+  uses: number;
+  active: boolean;
+  createdAt: string;
+};
+
+type AuraOwnerMembership = {
+  id: string;
+  profileId: string;
+  username: string;
+  displayName: string;
+  source: string;
+  expiresAt: string | null;
+};
+
 type ContextMenuState = {
   x: number;
   y: number;
@@ -333,15 +360,19 @@ export function KuzensApp() {
   const [search, setSearch] = useState("");
   const [replyingTo, setReplyingTo] = useState<ChatMessage | null>(null);
   const [voiceConnected, setVoiceConnected] = useState(false);
+  const [connectedVoiceChannelId, setConnectedVoiceChannelId] = useState<string | null>(null);
   const [muted, setMuted] = useState(false);
   const [deafened, setDeafened] = useState(false);
   const [sharing, setSharing] = useState(false);
   const [toast, setToast] = useState<Toast | null>(null);
   const [modal, setModal] = useState<
-    "channel" | "channelSettings" | "roles" | "server" | "friends" | "profile" | "memberProfile" | "notifications" | null
+    "channel" | "channelSettings" | "roles" | "server" | "serverSettings" | "friends" | "profile" | "memberProfile" | "notifications" | "aura" | null
   >(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [newServerName, setNewServerName] = useState("");
+  const [serverSettingsName, setServerSettingsName] = useState("");
+  const [serverSettingsIcon, setServerSettingsIcon] = useState("");
+  const [serverSaving, setServerSaving] = useState(false);
   const [newChannelName, setNewChannelName] = useState("");
   const [newChannelKind, setNewChannelKind] = useState<"text" | "voice">("text");
   const [channelSettingsName, setChannelSettingsName] = useState("");
@@ -368,12 +399,25 @@ export function KuzensApp() {
   const [roleItems, setRoleItems] = useState<Role[]>([]);
   const [roleAssignments, setRoleAssignments] = useState<RoleAssignment[]>([]);
   const [selectedRoleId, setSelectedRoleId] = useState("");
+  const [newRoleName, setNewRoleName] = useState("");
+  const [newRoleColor, setNewRoleColor] = useState("#9c7cff");
   const [rolesLoading, setRolesLoading] = useState(false);
   const [rolesSaving, setRolesSaving] = useState(false);
   const [rolesCanManage, setRolesCanManage] = useState(false);
   const [friendItems, setFriendItems] = useState<FriendItem[]>([]);
   const [friendUsername, setFriendUsername] = useState("");
   const [friendsLoading, setFriendsLoading] = useState(false);
+  const [auraMembership, setAuraMembership] = useState<AuraMembership | null>(null);
+  const [auraPerks, setAuraPerks] = useState<string[]>([]);
+  const [auraCodes, setAuraCodes] = useState<AuraCode[]>([]);
+  const [auraMembers, setAuraMembers] = useState<AuraOwnerMembership[]>([]);
+  const [auraRedeemCode, setAuraRedeemCode] = useState("");
+  const [auraGrantUsername, setAuraGrantUsername] = useState("");
+  const [auraDuration, setAuraDuration] = useState<30 | 90 | 365 | 0>(30);
+  const [auraCodeDuration, setAuraCodeDuration] = useState<30 | 90 | 365>(30);
+  const [auraMaxUses, setAuraMaxUses] = useState(1);
+  const [auraBusy, setAuraBusy] = useState(false);
+  const [freshAuraCode, setFreshAuraCode] = useState("");
   const [remoteStreams, setRemoteStreams] = useState<Record<string, MediaStream>>({});
   const voiceStream = useRef<MediaStream | null>(null);
   const displayStream = useRef<MediaStream | null>(null);
@@ -386,6 +430,8 @@ export function KuzensApp() {
   const makingOffers = useRef(new Set<string>());
 
   const selected = channels.find((channel) => channel.id === activeChannel) || channels[0];
+  const connectedVoiceChannel =
+    channels.find((channel) => channel.id === connectedVoiceChannelId) || null;
   const activeServer =
     servers.find((server) => server.id === activeServerId) ||
     ({ id: "kuzens", name: "Kuzens", icon: "KZ" } satisfies CommunityServer);
@@ -417,6 +463,7 @@ export function KuzensApp() {
     (member) => member.id !== profile?.id && member.sharing && remoteStreams[member.id],
   );
   const canManageChannels = (permissions & 2) !== 0;
+  const canManageRoles = (permissions & 4) !== 0;
   const canManageMessages = (permissions & 8) !== 0;
   const canKickMembers = (permissions & 16) !== 0;
   const canBanMembers = (permissions & 32) !== 0;
@@ -591,8 +638,7 @@ export function KuzensApp() {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          voiceChannelId:
-            voiceConnected && selected?.kind === "voice" ? activeChannel : null,
+          voiceChannelId: voiceConnected ? connectedVoiceChannelId : null,
           sharing: voiceConnected && sharing,
           serverId: activeServerId,
         }),
@@ -606,7 +652,7 @@ export function KuzensApp() {
       window.clearInterval(presenceTimer);
       window.clearInterval(membersTimer);
     };
-  }, [activeChannel, activeServerId, profile, selected?.kind, sharing, voiceConnected]);
+  }, [activeServerId, connectedVoiceChannelId, profile, sharing, voiceConnected]);
 
   useEffect(() => {
     const list = messageList.current;
@@ -636,6 +682,10 @@ export function KuzensApp() {
       if (document.visibilityState === "visible") void loadNotifications();
     }, 15_000);
     return () => window.clearInterval(timer);
+  }, [profile]);
+
+  useEffect(() => {
+    if (profile) void loadAura();
   }, [profile]);
 
   useEffect(() => {
@@ -676,13 +726,13 @@ export function KuzensApp() {
     type: RtcSignal["type"],
     payload: unknown,
   ) => {
-    if (!selected || selected.kind !== "voice") return;
+    if (!connectedVoiceChannelId) return;
     const response = await apiFetch("/api/rtc", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         serverId: activeServerId,
-        channelId: selected.id,
+        channelId: connectedVoiceChannelId,
         recipientProfileId,
         type,
         payload,
@@ -691,7 +741,7 @@ export function KuzensApp() {
     if (!response.ok) {
       throw new Error(await responseError(response, "Ses bağlantısı kurulamadı."));
     }
-  }, [activeServerId, selected]);
+  }, [activeServerId, connectedVoiceChannelId]);
 
   const closePeer = useCallback((profileId: string) => {
     peerConnections.current.get(profileId)?.close();
@@ -780,22 +830,22 @@ export function KuzensApp() {
   }, [getOrCreatePeer, sendRtcSignal]);
 
   useEffect(() => {
-    if (!voiceConnected || !profile || selected?.kind !== "voice") {
+    if (!voiceConnected || !profile || !connectedVoiceChannelId) {
       peerConnections.current.forEach((_, profileId) => closePeer(profileId));
       rtcSyncAt.current = new Date(Date.now() - 30_000).toISOString();
       rtcChannelId.current = null;
       return;
     }
-    if (rtcChannelId.current !== selected.id) {
+    if (rtcChannelId.current !== connectedVoiceChannelId) {
       peerConnections.current.forEach((_, profileId) => closePeer(profileId));
       rtcSyncAt.current = new Date(Date.now() - 30_000).toISOString();
-      rtcChannelId.current = selected.id;
+      rtcChannelId.current = connectedVoiceChannelId;
     }
     const participantIds = new Set(
       members
         .filter(
           (member) =>
-            member.voiceChannelId === selected.id && member.id !== profile.id,
+            member.voiceChannelId === connectedVoiceChannelId && member.id !== profile.id,
         )
         .map((member) => member.id),
     );
@@ -811,7 +861,7 @@ export function KuzensApp() {
     async function pollSignals() {
       const query = new URLSearchParams({
         server: activeServerId,
-        channel: selected.id,
+        channel: connectedVoiceChannelId,
         after: rtcSyncAt.current,
       });
       const response = await apiFetch(`/api/rtc?${query.toString()}`);
@@ -832,67 +882,98 @@ export function KuzensApp() {
       stopped = true;
       window.clearInterval(timer);
     };
-  }, [activeServerId, applyRtcSignal, closePeer, getOrCreatePeer, members, profile, selected, voiceConnected]);
+  }, [activeServerId, applyRtcSignal, closePeer, connectedVoiceChannelId, getOrCreatePeer, members, profile, voiceConnected]);
 
-  async function toggleVoice() {
-    if (voiceConnected) {
-      await apiFetch("/api/presence", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          serverId: activeServerId,
-          voiceChannelId: null,
-          sharing: false,
-        }),
-      }).catch(() => undefined);
-      voiceStream.current?.getTracks().forEach((track) => track.stop());
-      voiceStream.current = null;
-      displayStream.current?.getTracks().forEach((track) => track.stop());
-      displayStream.current = null;
-      setSharing(false);
-      peerConnections.current.forEach((_, profileId) => closePeer(profileId));
-      setVoiceConnected(false);
-      setToast({ text: "Sesli odadan ayrıldın." });
-      return;
-    }
+  async function leaveVoice(showToast = true) {
+    await apiFetch("/api/presence", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        serverId: activeServerId,
+        voiceChannelId: null,
+        sharing: false,
+      }),
+    }).catch(() => undefined);
+    voiceStream.current?.getTracks().forEach((track) => track.stop());
+    voiceStream.current = null;
+    displayStream.current?.getTracks().forEach((track) => track.stop());
+    displayStream.current = null;
+    if (previewVideo.current) previewVideo.current.srcObject = null;
+    setSharing(false);
+    peerConnections.current.forEach((_, profileId) => closePeer(profileId));
+    setVoiceConnected(false);
+    setConnectedVoiceChannelId(null);
+    if (showToast) setToast({ text: "Sesli odadan ayrıldın." });
+  }
 
-    if (!selected || selected.kind !== "voice") return;
+  async function joinVoice(channel: Channel) {
+    if (channel.kind !== "voice") return;
     if ((permissions & 64) === 0) {
       setToast({ text: "Bu ses odasına katılma yetkin yok.", tone: "danger" });
       return;
     }
+    if (voiceConnected && connectedVoiceChannelId === channel.id) return;
+
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
-      });
-      voiceStream.current = stream;
+      if (voiceConnected && connectedVoiceChannelId !== channel.id && displayStream.current) {
+        displayStream.current.getTracks().forEach((track) => track.stop());
+        displayStream.current = null;
+        if (previewVideo.current) previewVideo.current.srcObject = null;
+      }
+      let stream = voiceStream.current;
+      if (!stream) {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+        });
+        voiceStream.current = stream;
+      }
       const presence = await apiFetch("/api/presence", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           serverId: activeServerId,
-          voiceChannelId: selected.id,
+          voiceChannelId: channel.id,
           sharing: false,
         }),
       });
       if (!presence.ok) {
-        stream.getTracks().forEach((track) => track.stop());
-        voiceStream.current = null;
+        if (!voiceConnected) {
+          stream.getTracks().forEach((track) => track.stop());
+          voiceStream.current = null;
+        }
         throw new Error(await responseError(presence, "Ses odasına bağlanılamadı."));
       }
+      peerConnections.current.forEach((_, profileId) => closePeer(profileId));
+      rtcSyncAt.current = new Date(Date.now() - 30_000).toISOString();
+      rtcChannelId.current = channel.id;
+      setConnectedVoiceChannelId(channel.id);
       setVoiceConnected(true);
       setMuted(false);
-      setToast({ text: `${selected.name} odasına bağlandın.`, tone: "success" });
+      setSharing(false);
+      setToast({
+        text: voiceConnected
+          ? `${channel.name} ses odasına geçtin.`
+          : `${channel.name} ses odasına katıldın.`,
+        tone: "success",
+      });
     } catch (error) {
       setToast({
         text: error instanceof Error ? error.message : "Mikrofon izni verilmedi.",
         tone: "danger",
       });
     }
+  }
+
+  async function toggleVoice() {
+    if (voiceConnected) {
+      await leaveVoice();
+      return;
+    }
+    if (selected?.kind === "voice") await joinVoice(selected);
   }
 
   function toggleMute() {
@@ -923,14 +1004,14 @@ export function KuzensApp() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           serverId: activeServerId,
-          voiceChannelId: activeChannel,
+          voiceChannelId: connectedVoiceChannelId,
           sharing: false,
         }),
       }).catch(() => undefined);
       return;
     }
 
-    if (!voiceConnected || selected?.kind !== "voice") {
+    if (!voiceConnected || !connectedVoiceChannelId) {
       setToast({ text: "Önce bir ses odasına bağlanmalısın.", tone: "danger" });
       return;
     }
@@ -940,7 +1021,14 @@ export function KuzensApp() {
     }
     try {
       const stream = await navigator.mediaDevices.getDisplayMedia({
-        video: { frameRate: { ideal: 30, max: 60 } },
+        video: {
+          frameRate: {
+            ideal: auraMembership?.active ? 60 : 30,
+            max: auraMembership?.active ? 60 : 30,
+          },
+          width: { ideal: auraMembership?.active ? 1920 : 1280 },
+          height: { ideal: auraMembership?.active ? 1080 : 720 },
+        },
         audio: true,
       });
       displayStream.current = stream;
@@ -959,7 +1047,7 @@ export function KuzensApp() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           serverId: activeServerId,
-          voiceChannelId: activeChannel,
+          voiceChannelId: connectedVoiceChannelId,
           sharing: true,
         }),
       });
@@ -1255,6 +1343,11 @@ export function KuzensApp() {
     setModal("profile");
   }
 
+  function openMemberProfile(member: Member) {
+    setViewingMember(member);
+    setModal("memberProfile");
+  }
+
   async function saveProfile(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setProfileSaving(true);
@@ -1330,6 +1423,7 @@ export function KuzensApp() {
     if (!channel || !canManageChannels || !window.confirm(`#${channel.name} silinsin mi?`)) {
       return;
     }
+    if (connectedVoiceChannelId === channel.id) await leaveVoice(false);
     const response = await apiFetch("/api/channels", {
       method: "DELETE",
       headers: { "content-type": "application/json" },
@@ -1433,6 +1527,80 @@ export function KuzensApp() {
     });
   }
 
+  async function createRole(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!newRoleName.trim()) return;
+    setRolesSaving(true);
+    try {
+      const response = await apiFetch("/api/roles", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          action: "create",
+          serverId: activeServerId,
+          name: newRoleName,
+          color: newRoleColor,
+          permissions: 192,
+        }),
+      });
+      if (!response.ok) throw new Error(await responseError(response, "Rol oluşturulamadı."));
+      const data = (await response.json()) as { role: Role };
+      setRoleItems((current) => [...current, data.role]);
+      setSelectedRoleId(data.role.id);
+      setNewRoleName("");
+      setToast({ text: `${data.role.name} rolü oluşturuldu.`, tone: "success" });
+    } catch (error) {
+      setToast({
+        text: error instanceof Error ? error.message : "Rol oluşturulamadı.",
+        tone: "danger",
+      });
+    } finally {
+      setRolesSaving(false);
+    }
+  }
+
+  async function deleteSelectedRole() {
+    if (
+      !selectedRole ||
+      !selectedRole.id.includes(":custom:") ||
+      !window.confirm(`${selectedRole.name} rolü silinsin mi?`)
+    ) {
+      return;
+    }
+    setRolesSaving(true);
+    try {
+      const response = await apiFetch("/api/roles", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          action: "delete",
+          serverId: activeServerId,
+          roleId: selectedRole.id,
+        }),
+      });
+      if (!response.ok) throw new Error(await responseError(response, "Rol silinemedi."));
+      const memberRoleId = roleItems.find((role) => role.id.endsWith(":member"))?.id || "";
+      setRoleAssignments((current) =>
+        current.map((assignment) =>
+          assignment.roleId === selectedRole.id
+            ? { ...assignment, roleId: memberRoleId }
+            : assignment,
+        ),
+      );
+      const nextRoles = roleItems.filter((role) => role.id !== selectedRole.id);
+      setRoleItems(nextRoles);
+      setSelectedRoleId(nextRoles[0]?.id || "");
+      setToast({ text: "Rol silindi; üyeler Kuzen rolüne taşındı.", tone: "success" });
+    } catch (error) {
+      setToast({
+        text: error instanceof Error ? error.message : "Rol silinemedi.",
+        tone: "danger",
+      });
+    } finally {
+      setRolesSaving(false);
+    }
+  }
+
   async function saveRoles() {
     const selectedRole = roleItems.find((role) => role.id === selectedRoleId);
     if (!selectedRole) return;
@@ -1442,8 +1610,11 @@ export function KuzensApp() {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
+          action: "save",
           serverId: activeServerId,
           roleId: selectedRole.id,
+          name: selectedRole.name,
+          color: selectedRole.color,
           permissions: selectedRole.permissions,
           assignments: members.map((member) => ({
             memberTag: member.tag,
@@ -1603,6 +1774,97 @@ export function KuzensApp() {
     }
   }
 
+  async function loadAura() {
+    const response = await apiFetch("/api/aura");
+    if (!response.ok) {
+      setToast({ text: await responseError(response, "Aura bilgileri yüklenemedi."), tone: "danger" });
+      return;
+    }
+    const data = (await response.json()) as {
+      membership?: AuraMembership | null;
+      perks?: string[];
+      owner?: {
+        codes?: AuraCode[];
+        memberships?: AuraOwnerMembership[];
+      };
+    };
+    setAuraMembership(data.membership || null);
+    setAuraPerks(data.perks || []);
+    setAuraCodes(data.owner?.codes || []);
+    setAuraMembers(data.owner?.memberships || []);
+  }
+
+  function openAura() {
+    setFreshAuraCode("");
+    setModal("aura");
+    void loadAura();
+  }
+
+  async function auraAction(payload: Record<string, unknown>, successMessage: string) {
+    setAuraBusy(true);
+    try {
+      const response = await apiFetch("/api/aura", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = (await response.json()) as {
+        error?: string;
+        code?: string;
+      };
+      if (!response.ok) throw new Error(data.error || "Aura işlemi tamamlanamadı.");
+      if (data.code) {
+        setFreshAuraCode(data.code);
+        await navigator.clipboard.writeText(data.code).catch(() => undefined);
+      }
+      await loadAura();
+      setToast({ text: successMessage, tone: "success" });
+      return true;
+    } catch (error) {
+      setToast({
+        text: error instanceof Error ? error.message : "Aura işlemi tamamlanamadı.",
+        tone: "danger",
+      });
+      return false;
+    } finally {
+      setAuraBusy(false);
+    }
+  }
+
+  async function redeemAura(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const ok = await auraAction(
+      { action: "redeem", code: auraRedeemCode },
+      "Kuzens Aura hesabında etkinleştirildi.",
+    );
+    if (ok) setAuraRedeemCode("");
+  }
+
+  async function createAuraCode(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    await auraAction(
+      {
+        action: "create-code",
+        durationDays: auraCodeDuration,
+        maxUses: auraMaxUses,
+      },
+      "Yeni Aura kodu üretildi ve panoya kopyalandı.",
+    );
+  }
+
+  async function grantAura(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const ok = await auraAction(
+      {
+        action: "grant",
+        username: auraGrantUsername,
+        durationDays: auraDuration === 0 ? null : auraDuration,
+      },
+      `@${auraGrantUsername.replace(/^@/, "")} için Aura tanımlandı.`,
+    );
+    if (ok) setAuraGrantUsername("");
+  }
+
   async function createServer(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const name = newServerName.trim();
@@ -1622,6 +1884,49 @@ export function KuzensApp() {
     setModal(null);
     setActiveServerId(data.server.id);
     setToast({ text: `${data.server.name} topluluğu hazır.`, tone: "success" });
+  }
+
+  function openServerSettings() {
+    if (!ownsActiveServer) {
+      setToast({ text: "Topluluk ayarlarını yalnızca kurucu düzenleyebilir.", tone: "danger" });
+      return;
+    }
+    setServerSettingsName(activeServer.name);
+    setServerSettingsIcon(activeServer.icon);
+    setContextMenu(null);
+    setModal("serverSettings");
+  }
+
+  async function saveServerSettings(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setServerSaving(true);
+    try {
+      const response = await apiFetch("/api/servers", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          id: activeServerId,
+          name: serverSettingsName,
+          icon: serverSettingsIcon,
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(await responseError(response, "Topluluk ayarları kaydedilemedi."));
+      }
+      const data = (await response.json()) as { server: CommunityServer };
+      setServers((current) =>
+        current.map((server) => (server.id === data.server.id ? data.server : server)),
+      );
+      setModal(null);
+      setToast({ text: "Topluluk ayarları kaydedildi.", tone: "success" });
+    } catch (error) {
+      setToast({
+        text: error instanceof Error ? error.message : "Topluluk ayarları kaydedilemedi.",
+        tone: "danger",
+      });
+    } finally {
+      setServerSaving(false);
+    }
   }
 
   async function deleteActiveServer() {
@@ -1650,7 +1955,7 @@ export function KuzensApp() {
 
   async function chooseServer(serverId: string) {
     if (serverId === activeServerId) return;
-    if (voiceConnected) await toggleVoice();
+    if (voiceConnected) await leaveVoice(false);
     setActiveServerId(serverId);
     setMessages([]);
     setMembers([]);
@@ -1658,15 +1963,10 @@ export function KuzensApp() {
     setShowPinnedOnly(false);
   }
 
-  function chooseChannel(channel: Channel) {
-    if (voiceConnected && channel.kind !== "voice") {
-      void toggleVoice();
-    }
+  async function chooseChannel(channel: Channel) {
     setActiveChannel(channel.id);
     setMobileChannels(false);
-    if (channel.kind === "voice" && !voiceConnected) {
-      setToast({ text: "Katılmak için üstteki “Sese katıl” düğmesine bas." });
-    }
+    if (channel.kind === "voice") await joinVoice(channel);
   }
 
   return (
@@ -1711,7 +2011,11 @@ export function KuzensApp() {
             <span className="eyebrow">TOPLULUK</span>
             <strong>{activeServer.name}</strong>
           </div>
-          <button className="icon-button" aria-label="Sunucu menüsü" onClick={openRoles}>
+          <button
+            className="icon-button"
+            aria-label="Topluluk ayarları"
+            onClick={ownsActiveServer ? openServerSettings : openRoles}
+          >
             •••
           </button>
         </header>
@@ -1719,6 +2023,10 @@ export function KuzensApp() {
         <div className="server-actions">
           <button onClick={copyInvite}><span>↗</span> Arkadaşlarını davet et</button>
           <button onClick={openRoles}><span>♢</span> Roller ve yetkiler</button>
+          {ownsActiveServer && (
+            <button onClick={openServerSettings}><span>⚙</span> Topluluk ayarları</button>
+          )}
+          <button className="aura-entry" onClick={openAura}><span>✦</span> Kuzens Aura</button>
           {ownsActiveServer && activeServerId !== "kuzens" && (
             <button onClick={() => void deleteActiveServer()}><span>×</span> Topluluğu sil</button>
           )}
@@ -1779,6 +2087,12 @@ export function KuzensApp() {
                       .map((member) => (
                         <span
                           key={member.id}
+                          role="button"
+                          tabIndex={0}
+                          onClick={() => openMemberProfile(member)}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter" || event.key === " ") openMemberProfile(member);
+                          }}
                           onContextMenu={(event) =>
                             openContextMenu(event, { kind: "member", member })
                           }
@@ -1799,7 +2113,7 @@ export function KuzensApp() {
           <section className="voice-status">
             <div>
               <span className="signal-bars">▮▮▮</span>
-              <div><strong>Ses bağlantısı iyi</strong><small>{selected?.name} / {activeServer.name}</small></div>
+              <div><strong>Ses bağlantısı iyi</strong><small>{connectedVoiceChannel?.name || "Ses odası"} / {activeServer.name}</small></div>
             </div>
             <button onClick={toggleVoice} aria-label="Sesli odadan ayrıl">×</button>
           </section>
@@ -1808,7 +2122,10 @@ export function KuzensApp() {
         <footer className="user-dock" onDoubleClick={openProfileSettings}>
           <Avatar name={profile?.displayName || "Savaş"} tone="purple" online />
           <button className="user-profile-button" onClick={openProfileSettings}>
-            <strong>{profile?.displayName || "Savaş"}</strong>
+            <strong>
+              {profile?.displayName || "Savaş"}
+              {auraMembership?.active && <i className="aura-mini-badge">AURA</i>}
+            </strong>
             <small>{profile?.customStatus || `@${profile?.username || "savas"}`}</small>
           </button>
           <button className={muted ? "control-active" : ""} onClick={toggleMute} aria-label="Mikrofonu aç veya kapat">μ</button>
@@ -1899,6 +2216,12 @@ export function KuzensApp() {
                 <article
                   className={`speaker-card ${member.id === profile?.id ? "speaking" : ""}`}
                   key={member.id}
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => openMemberProfile(member)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") openMemberProfile(member);
+                  }}
                   onContextMenu={(event) =>
                     openContextMenu(event, { kind: "member", member })
                   }
@@ -1929,12 +2252,6 @@ export function KuzensApp() {
                 )}
                 {sharing && <button className="stop-share" onClick={toggleShare}>Paylaşımı durdur</button>}
               </article>
-            </div>
-
-            <div className="remote-audio" aria-hidden="true">
-              {Object.entries(remoteStreams).map(([memberId, stream]) => (
-                <RemoteAudio key={memberId} stream={stream} muted={deafened} />
-              ))}
             </div>
 
             <div className="voice-controls">
@@ -2107,6 +2424,12 @@ export function KuzensApp() {
             <div
               className="member-row"
               key={member.id}
+              role="button"
+              tabIndex={0}
+              onClick={() => openMemberProfile(member)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") openMemberProfile(member);
+              }}
               onContextMenu={(event) =>
                 openContextMenu(event, { kind: "member", member })
               }
@@ -2117,7 +2440,10 @@ export function KuzensApp() {
                 <span className="member-moderation">
                   {canKickMembers && (
                     <button
-                      onClick={() => void moderateMember(member, "kick")}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void moderateMember(member, "kick");
+                      }}
                       title="Topluluktan çıkar"
                       aria-label={`${member.name} kullanıcısını topluluktan çıkar`}
                     >
@@ -2127,7 +2453,10 @@ export function KuzensApp() {
                   {canBanMembers && (
                     <button
                       className="danger"
-                      onClick={() => void moderateMember(member, "ban")}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void moderateMember(member, "ban");
+                      }}
                       title="Yasakla"
                       aria-label={`${member.name} kullanıcısını yasakla`}
                     >
@@ -2143,6 +2472,12 @@ export function KuzensApp() {
             <div
               className="member-row offline"
               key={member.id}
+              role="button"
+              tabIndex={0}
+              onClick={() => openMemberProfile(member)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") openMemberProfile(member);
+              }}
               onContextMenu={(event) =>
                 openContextMenu(event, { kind: "member", member })
               }
@@ -2153,7 +2488,10 @@ export function KuzensApp() {
                 <span className="member-moderation">
                   {canKickMembers && (
                     <button
-                      onClick={() => void moderateMember(member, "kick")}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void moderateMember(member, "kick");
+                      }}
                       title="Topluluktan çıkar"
                       aria-label={`${member.name} kullanıcısını topluluktan çıkar`}
                     >
@@ -2163,7 +2501,10 @@ export function KuzensApp() {
                   {canBanMembers && (
                     <button
                       className="danger"
-                      onClick={() => void moderateMember(member, "ban")}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void moderateMember(member, "ban");
+                      }}
                       title="Yasakla"
                       aria-label={`${member.name} kullanıcısını yasakla`}
                     >
@@ -2205,6 +2546,12 @@ export function KuzensApp() {
           <button onClick={copyInvite}>Bağlantıyı kopyala</button>
         </article>
       </aside>
+
+      <div className="remote-audio" aria-hidden="true">
+        {Object.entries(remoteStreams).map(([memberId, stream]) => (
+          <RemoteAudio key={memberId} stream={stream} muted={deafened} />
+        ))}
+      </div>
 
       {modal === "friends" && (
         <div className="modal-backdrop" onMouseDown={() => setModal(null)}>
@@ -2325,6 +2672,77 @@ export function KuzensApp() {
         </div>
       )}
 
+      {modal === "serverSettings" && (
+        <div className="modal-backdrop" onMouseDown={() => setModal(null)}>
+          <form
+            className="modal-card server-settings-modal"
+            onSubmit={saveServerSettings}
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <button type="button" className="modal-close" onClick={() => setModal(null)} aria-label="Kapat">×</button>
+            <div className="server-settings-head">
+              <div className="server-settings-icon">{serverSettingsIcon || "K"}</div>
+              <div>
+                <span className="eyebrow">TOPLULUK AYARLARI</span>
+                <h2>{activeServer.name}</h2>
+                <p>Kimlik, üyeler, odalar ve güvenlik tek merkezden yönetilir.</p>
+              </div>
+            </div>
+            <div className="server-overview-grid">
+              <label className="settings-field">
+                <span>Topluluk adı</span>
+                <input
+                  required
+                  minLength={2}
+                  maxLength={40}
+                  value={serverSettingsName}
+                  onChange={(event) => setServerSettingsName(event.target.value)}
+                />
+              </label>
+              <label className="settings-field">
+                <span>Kısa simge</span>
+                <input
+                  required
+                  minLength={1}
+                  maxLength={3}
+                  value={serverSettingsIcon}
+                  onChange={(event) =>
+                    setServerSettingsIcon(
+                      event.target.value.toLocaleUpperCase("tr-TR").replace(/\s/g, ""),
+                    )
+                  }
+                />
+              </label>
+            </div>
+            <div className="server-health">
+              <article><span>ÜYELER</span><strong>{members.length}</strong><small>{onlineMembers.length} çevrimiçi</small></article>
+              <article><span>ODALAR</span><strong>{channels.length}</strong><small>{textChannels.length} metin · {voiceChannels.length} ses</small></article>
+              <article><span>GÜVENLİK</span><strong>Etkin</strong><small>Rol kontrollü işlemler</small></article>
+            </div>
+            <div className="server-settings-links">
+              <button type="button" onClick={openRoles}><span>♢</span><div><strong>Roller ve yetkiler</strong><small>Rol oluştur, izinleri ve üye rollerini düzenle</small></div><b>›</b></button>
+              <button type="button" onClick={() => { setModal("channel"); setNewChannelKind("text"); }}><span>#</span><div><strong>Yeni oda oluştur</strong><small>Metin veya ses alanı ekle</small></div><b>›</b></button>
+              <button type="button" onClick={copyInvite}><span>↗</span><div><strong>Davet bağlantısı</strong><small>Sınırlı ve süreli davet oluştur</small></div><b>›</b></button>
+            </div>
+            <div className="modal-actions">
+              {activeServerId !== "kuzens" && (
+                <button
+                  type="button"
+                  className="danger-outline"
+                  onClick={() => void deleteActiveServer()}
+                >
+                  Topluluğu sil
+                </button>
+              )}
+              <button type="button" onClick={() => setModal(null)}>Vazgeç</button>
+              <button className="primary-button" disabled={serverSaving}>
+                {serverSaving ? "Kaydediliyor…" : "Değişiklikleri kaydet"}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
       {modal === "channel" && (
         <div className="modal-backdrop" onMouseDown={() => setModal(null)}>
           <form className="modal-card" onSubmit={createChannel} onMouseDown={(event) => event.stopPropagation()}>
@@ -2361,6 +2779,24 @@ export function KuzensApp() {
             ) : (
               <div className="permission-workspace">
                 <div className="role-tabs" role="tablist" aria-label="Roller">
+                  {rolesCanManage && (
+                    <form className="new-role-form" onSubmit={createRole}>
+                      <input
+                        type="color"
+                        value={newRoleColor}
+                        onChange={(event) => setNewRoleColor(event.target.value)}
+                        aria-label="Yeni rol rengi"
+                      />
+                      <input
+                        value={newRoleName}
+                        onChange={(event) => setNewRoleName(event.target.value)}
+                        placeholder="Yeni rol"
+                        maxLength={32}
+                        aria-label="Yeni rol adı"
+                      />
+                      <button disabled={!newRoleName.trim() || rolesSaving} aria-label="Rol oluştur">＋</button>
+                    </form>
+                  )}
                   {roleItems.map((role) => (
                     <button
                       key={role.id}
@@ -2383,6 +2819,47 @@ export function KuzensApp() {
                     </div>
                     <b>{selectedRole ? permissionOptions.filter((item) => (selectedRole.permissions & item.bit) !== 0).length : 0}/8 açık</b>
                   </div>
+                  {selectedRole && !selectedRole.id.endsWith(":owner") && rolesCanManage && (
+                    <div className="role-identity-fields">
+                      <label>
+                        <span>Rol adı</span>
+                        <input
+                          value={selectedRole.name}
+                          maxLength={32}
+                          onChange={(event) =>
+                            setRoleItems((current) =>
+                              current.map((role) =>
+                                role.id === selectedRole.id
+                                  ? { ...role, name: event.target.value }
+                                  : role,
+                              ),
+                            )
+                          }
+                        />
+                      </label>
+                      <label>
+                        <span>Rol rengi</span>
+                        <input
+                          type="color"
+                          value={selectedRole.color}
+                          onChange={(event) =>
+                            setRoleItems((current) =>
+                              current.map((role) =>
+                                role.id === selectedRole.id
+                                  ? { ...role, color: event.target.value }
+                                  : role,
+                              ),
+                            )
+                          }
+                        />
+                      </label>
+                      {selectedRole.id.includes(":custom:") && (
+                        <button type="button" onClick={() => void deleteSelectedRole()}>
+                          Rolü sil
+                        </button>
+                      )}
+                    </div>
+                  )}
                   <div className="permission-list">
                     {permissionOptions.map((permission) => {
                       const checked = Boolean(selectedRole && (selectedRole.permissions & permission.bit));
@@ -2495,6 +2972,178 @@ export function KuzensApp() {
               <button className="primary-button">Değişiklikleri kaydet</button>
             </div>
           </form>
+        </div>
+      )}
+
+      {modal === "aura" && (
+        <div className="modal-backdrop" onMouseDown={() => setModal(null)}>
+          <section
+            className="modal-card aura-modal"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <button className="modal-close" onClick={() => setModal(null)} aria-label="Kapat">×</button>
+            <div className="aura-hero">
+              <div className="aura-orb"><span>K</span><i /></div>
+              <div>
+                <span className="eyebrow">KUZENS AURA</span>
+                <h2>Topluluk deneyimini parlat.</h2>
+                <p>Destekçilere özel görünüm, daha güçlü paylaşım ve erken erişim ayrıcalıkları.</p>
+              </div>
+              <div className={`aura-status ${auraMembership?.active ? "active" : ""}`}>
+                <span>{auraMembership?.active ? "ETKİN" : "ÜCRETSİZ"}</span>
+                <strong>
+                  {auraMembership?.active
+                    ? auraMembership.expiresAt
+                      ? new Date(auraMembership.expiresAt).toLocaleDateString("tr-TR")
+                      : "Süresiz"
+                    : "Aura kapalı"}
+                </strong>
+              </div>
+            </div>
+
+            <div className="aura-body">
+              <div className="aura-main">
+                <div className="aura-plans">
+                  <article><span>1 AY</span><strong>Başlangıç</strong><small>Kısa süreli destek kodu</small></article>
+                  <article className="featured"><i>POPÜLER</i><span>3 AY</span><strong>Parıltı</strong><small>Topluluk için dengeli paket</small></article>
+                  <article><span>1 YIL</span><strong>Yıldız</strong><small>Uzun süreli Aura erişimi</small></article>
+                </div>
+                <section className="aura-perks">
+                  <div><span>AYRICALIKLAR</span><small>Ücretsiz özellikler asla kısıtlanmaz.</small></div>
+                  <ul>
+                    {auraPerks.map((perk) => <li key={perk}><i>✓</i>{perk}</li>)}
+                  </ul>
+                </section>
+                <form className="aura-redeem" onSubmit={redeemAura}>
+                  <div>
+                    <strong>Bir Aura kodun mu var?</strong>
+                    <small>Kodu yalnızca resmî Kuzens satışından veya kurucudan al.</small>
+                  </div>
+                  <input
+                    value={auraRedeemCode}
+                    onChange={(event) => setAuraRedeemCode(event.target.value.toLocaleUpperCase("en-US"))}
+                    placeholder="AURA-XXXX-XXXX-XXXX"
+                    maxLength={19}
+                    aria-label="Aura kodu"
+                  />
+                  <button disabled={auraBusy || auraRedeemCode.length < 16}>Etkinleştir</button>
+                </form>
+                <p className="aura-payment-note">
+                  Kartla otomatik ödeme için bir ödeme kuruluşu hesabı gerekir. Aylık sabit gider oluşturmadan
+                  başlamak için satış kodları hazır: ödemeyi aldıktan sonra tek kullanımlık kodu teslim edebilirsin.
+                </p>
+              </div>
+
+              {profile?.isOwner && (
+                <aside className="aura-owner">
+                  <div className="aura-owner-title">
+                    <span>SAHİP MERKEZİ</span>
+                    <strong>Aura yönetimi</strong>
+                    <small>Kod sat, hediye et veya üyeliği geri al.</small>
+                  </div>
+                  <form onSubmit={createAuraCode}>
+                    <label>
+                      <span>Kod süresi</span>
+                      <select
+                        value={auraCodeDuration}
+                        onChange={(event) =>
+                          setAuraCodeDuration(Number(event.target.value) as 30 | 90 | 365)
+                        }
+                      >
+                        <option value={30}>30 gün</option>
+                        <option value={90}>90 gün</option>
+                        <option value={365}>365 gün</option>
+                      </select>
+                    </label>
+                    <label>
+                      <span>Kullanım hakkı</span>
+                      <input
+                        type="number"
+                        min={1}
+                        max={100}
+                        value={auraMaxUses}
+                        onChange={(event) => setAuraMaxUses(Number(event.target.value))}
+                      />
+                    </label>
+                    <button disabled={auraBusy}>Satış kodu üret</button>
+                  </form>
+                  {freshAuraCode && (
+                    <button
+                      className="fresh-aura-code"
+                      onClick={() => void navigator.clipboard.writeText(freshAuraCode)}
+                    >
+                      <span>YENİ KOD · panoya kopyalandı</span>
+                      <strong>{freshAuraCode}</strong>
+                    </button>
+                  )}
+                  <form onSubmit={grantAura}>
+                    <label className="owner-username">
+                      <span>Kullanıcıya Aura ver</span>
+                      <input
+                        value={auraGrantUsername}
+                        onChange={(event) => setAuraGrantUsername(event.target.value.replace(/^@/, ""))}
+                        placeholder="kullanici_adi"
+                      />
+                    </label>
+                    <label>
+                      <span>Süre</span>
+                      <select
+                        value={auraDuration}
+                        onChange={(event) =>
+                          setAuraDuration(Number(event.target.value) as 30 | 90 | 365 | 0)
+                        }
+                      >
+                        <option value={30}>30 gün</option>
+                        <option value={90}>90 gün</option>
+                        <option value={365}>365 gün</option>
+                        <option value={0}>Süresiz</option>
+                      </select>
+                    </label>
+                    <button disabled={auraBusy || auraGrantUsername.length < 3}>Aura ver</button>
+                  </form>
+                  <div className="aura-owner-list">
+                    <span>ETKİN ÜYELİKLER · {auraMembers.length}</span>
+                    {auraMembers.slice(0, 8).map((member) => (
+                      <article key={member.id}>
+                        <Avatar name={member.displayName} tone={toneFor(member.profileId)} size="sm" />
+                        <div><strong>{member.displayName}</strong><small>@{member.username} · {member.expiresAt ? new Date(member.expiresAt).toLocaleDateString("tr-TR") : "Süresiz"}</small></div>
+                        <button
+                          onClick={() =>
+                            void auraAction(
+                              { action: "revoke", username: member.username },
+                              `@${member.username} için Aura kaldırıldı.`,
+                            )
+                          }
+                        >
+                          Kaldır
+                        </button>
+                      </article>
+                    ))}
+                  </div>
+                  <div className="aura-code-list">
+                    <span>SON KODLAR</span>
+                    {auraCodes.slice(0, 6).map((code) => (
+                      <article key={code.id} className={!code.active ? "disabled" : ""}>
+                        <div><strong>{code.codeHint}</strong><small>{code.durationDays} gün · {code.uses}/{code.maxUses} kullanım</small></div>
+                        {code.active && (
+                          <button
+                            onClick={() =>
+                              void auraAction(
+                                { action: "disable-code", codeId: code.id },
+                                "Aura kodu kapatıldı.",
+                              )
+                            }
+                          >
+                            Kapat
+                          </button>
+                        )}
+                      </article>
+                    ))}
+                  </div>
+                </aside>
+              )}
+            </div>
+          </section>
         </div>
       )}
 
@@ -2706,6 +3355,10 @@ export function KuzensApp() {
               <button onClick={() => { setNewChannelKind("voice"); setModal("channel"); }}><span>◖</span>Ses kanalı oluştur</button>
               <i />
               <button onClick={openRoles}><span>♢</span>Roller ve yetkiler</button>
+              {ownsActiveServer && (
+                <button onClick={openServerSettings}><span>⚙</span>Topluluk ayarları</button>
+              )}
+              <button onClick={openAura}><span>✦</span>Kuzens Aura</button>
             </>
           )}
           {contextMenu.kind === "channel" && contextMenu.channel && (
@@ -2760,6 +3413,9 @@ export function KuzensApp() {
               </div>
               <button onClick={() => { setViewingMember(contextMenu.member!); setModal("memberProfile"); }}><span>◉</span>Profili görüntüle</button>
               <button onClick={() => insertMention(contextMenu.member!.tag)}><span>@</span>Bahset</button>
+              {canManageRoles && (
+                <button onClick={openRoles}><span>♢</span>Rolünü düzenle</button>
+              )}
               {contextMenu.member.id !== profile?.id && (
                 <button onClick={() => void requestFriend(contextMenu.member!)}><span>＋</span>Arkadaş ekle</button>
               )}

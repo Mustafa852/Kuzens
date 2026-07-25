@@ -262,3 +262,53 @@ export const privacyRequests = sqliteTable(
   },
   (table) => [index("privacy_requests_created_idx").on(table.createdAt)],
 );
+
+export const auraMemberships = sqliteTable(
+  "aura_memberships",
+  {
+    id: text("id").primaryKey(),
+    profileId: text("profile_id").notNull(),
+    source: text("source", { enum: ["code", "owner", "purchase"] }).notNull(),
+    grantedByProfileId: text("granted_by_profile_id"),
+    expiresAt: text("expires_at"),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("aura_memberships_profile_idx").on(table.profileId),
+    index("aura_memberships_expiry_idx").on(table.expiresAt),
+  ],
+);
+
+export const auraCodes = sqliteTable(
+  "aura_codes",
+  {
+    id: text("id").primaryKey(),
+    codeHash: text("code_hash").notNull(),
+    codeHint: text("code_hint").notNull(),
+    durationDays: integer("duration_days").notNull(),
+    maxUses: integer("max_uses").notNull().default(1),
+    uses: integer("uses").notNull().default(0),
+    active: integer("active", { mode: "boolean" }).notNull().default(true),
+    createdByProfileId: text("created_by_profile_id").notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("aura_codes_hash_idx").on(table.codeHash),
+    index("aura_codes_owner_idx").on(table.createdByProfileId, table.createdAt),
+  ],
+);
+
+export const auraRedemptions = sqliteTable(
+  "aura_redemptions",
+  {
+    id: text("id").primaryKey(),
+    codeId: text("code_id").notNull(),
+    profileId: text("profile_id").notNull(),
+    redeemedAt: text("redeemed_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("aura_redemptions_code_profile_idx").on(table.codeId, table.profileId),
+    index("aura_redemptions_profile_idx").on(table.profileId, table.redeemedAt),
+  ],
+);

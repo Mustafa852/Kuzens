@@ -1423,6 +1423,8 @@
   display: grid;
   padding: 20px;
   place-items: center;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   background: rgba(5, 4, 8, 0.72);
   backdrop-filter: blur(8px);
 }
@@ -2768,6 +2770,638 @@
   white-space: nowrap;
 }
 
+.aura-entry {
+  color: #d6c6ff !important;
+}
+
+.aura-entry span {
+  color: #b995ff !important;
+}
+
+.aura-mini-badge {
+  display: inline-flex;
+  margin-left: 6px;
+  padding: 2px 5px;
+  border: 1px solid rgba(195, 155, 255, 0.38);
+  border-radius: 5px;
+  background: linear-gradient(135deg, #845bf0, #d65ca6);
+  color: #fff;
+  font-size: 6px;
+  font-style: normal;
+  letter-spacing: 0.08em;
+  vertical-align: middle;
+}
+
+.server-settings-modal {
+  width: min(720px, calc(100vw - 24px));
+  max-height: calc(100dvh - 28px);
+  overflow-y: auto;
+}
+
+.server-settings-head {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
+.server-settings-head h2,
+.server-settings-head p {
+  margin: 3px 0;
+}
+
+.server-settings-head p {
+  color: #7f7788;
+  font-size: 10px;
+}
+
+.server-settings-icon {
+  display: grid;
+  width: 62px;
+  height: 62px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid rgba(174, 137, 255, 0.42);
+  border-radius: 18px;
+  background: linear-gradient(145deg, #9e7aff, #6341d4);
+  box-shadow: 0 12px 35px rgba(95, 57, 196, 0.28);
+  color: #fff;
+  font-size: 19px;
+  font-weight: 850;
+}
+
+.server-overview-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 140px;
+  gap: 12px;
+}
+
+.server-health {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.server-health article {
+  display: grid;
+  gap: 4px;
+  padding: 13px;
+  border: 1px solid #2c2734;
+  border-radius: 11px;
+  background: #131117;
+}
+
+.server-health span,
+.server-health small {
+  color: #746d7d;
+  font-size: 8px;
+}
+
+.server-health strong {
+  color: #eee9f4;
+  font-size: 15px;
+}
+
+.server-settings-links {
+  display: grid;
+  gap: 7px;
+  margin-top: 14px;
+}
+
+.server-settings-links > button {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 11px;
+  padding: 10px;
+  border: 1px solid #2b2632;
+  border-radius: 10px;
+  background: #151219;
+  color: #bdb5c6;
+  text-align: left;
+}
+
+.server-settings-links > button:hover {
+  border-color: rgba(156, 124, 255, 0.4);
+  background: #1d1825;
+}
+
+.server-settings-links > button > span {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border-radius: 9px;
+  background: #2a2238;
+  color: #a982ff;
+}
+
+.server-settings-links div {
+  display: grid;
+  gap: 2px;
+}
+
+.server-settings-links strong {
+  color: #e4dfe9;
+  font-size: 11px;
+}
+
+.server-settings-links small {
+  color: #746d7d;
+  font-size: 9px;
+}
+
+.server-settings-links b {
+  color: #635c6d;
+  font-size: 18px;
+}
+
+.danger-outline {
+  margin-right: auto;
+  border: 1px solid rgba(255, 107, 107, 0.3) !important;
+  color: #ff7777 !important;
+}
+
+.new-role-form {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) 28px;
+  gap: 5px;
+  margin-bottom: 7px;
+}
+
+.new-role-form input {
+  min-width: 0;
+  height: 32px;
+  border: 1px solid #302a39;
+  border-radius: 7px;
+  outline: 0;
+  background: #100e15;
+  color: #dcd5e4;
+  font-size: 10px;
+}
+
+.new-role-form input[type="color"] {
+  width: 30px;
+  padding: 4px;
+}
+
+.new-role-form input:not([type="color"]) {
+  padding: 0 8px;
+}
+
+.new-role-form button {
+  border-radius: 7px;
+  background: #2c2340;
+  color: #b895ff;
+}
+
+.role-identity-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 86px auto;
+  align-items: end;
+  gap: 8px;
+  padding: 10px 0 12px;
+}
+
+.role-identity-fields label {
+  display: grid;
+  gap: 5px;
+  color: #746d7c;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.role-identity-fields input {
+  width: 100%;
+  height: 34px;
+  border: 1px solid #302a39;
+  border-radius: 8px;
+  background: #100e15;
+  color: #e4deeb;
+  padding: 0 9px;
+}
+
+.role-identity-fields input[type="color"] {
+  padding: 4px;
+}
+
+.role-identity-fields button {
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid rgba(255, 107, 107, 0.24);
+  border-radius: 8px;
+  background: rgba(255, 107, 107, 0.08);
+  color: #ff8585;
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.aura-modal {
+  width: min(1120px, calc(100vw - 24px));
+  max-height: calc(100dvh - 24px);
+  overflow-y: auto;
+  padding: 0;
+  background:
+    radial-gradient(circle at 12% 0, rgba(142, 83, 255, 0.2), transparent 28%),
+    #15121b;
+}
+
+.aura-modal > .modal-close {
+  top: 14px;
+  right: 14px;
+}
+
+.aura-hero {
+  display: grid;
+  grid-template-columns: 90px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 20px;
+  padding: 30px 34px 26px;
+  border-bottom: 1px solid #2a2335;
+  background:
+    linear-gradient(100deg, rgba(121, 75, 241, 0.18), transparent 58%),
+    #191421;
+}
+
+.aura-hero h2 {
+  margin: 5px 0;
+  font-size: 27px;
+}
+
+.aura-hero p {
+  max-width: 600px;
+  margin: 0;
+  color: #92889f;
+  font-size: 11px;
+}
+
+.aura-orb {
+  position: relative;
+  display: grid;
+  width: 78px;
+  height: 78px;
+  place-items: center;
+  border: 1px solid rgba(221, 176, 255, 0.35);
+  border-radius: 26px;
+  background: linear-gradient(145deg, #a971ff, #6c42da 54%, #dd639f);
+  box-shadow: 0 16px 48px rgba(120, 68, 225, 0.38);
+  color: #fff;
+  font-size: 27px;
+  font-weight: 900;
+}
+
+.aura-orb i {
+  position: absolute;
+  right: -4px;
+  bottom: -4px;
+  width: 22px;
+  height: 22px;
+  border: 4px solid #191421;
+  border-radius: 50%;
+  background: #ffcf6e;
+}
+
+.aura-status {
+  display: grid;
+  min-width: 125px;
+  gap: 4px;
+  padding: 12px 14px;
+  border: 1px solid #30293a;
+  border-radius: 11px;
+  background: #100e14;
+}
+
+.aura-status span {
+  color: #756d7e;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+}
+
+.aura-status strong {
+  color: #b9b1c2;
+  font-size: 11px;
+}
+
+.aura-status.active {
+  border-color: rgba(168, 117, 255, 0.42);
+  background: rgba(120, 74, 215, 0.12);
+}
+
+.aura-status.active span,
+.aura-status.active strong {
+  color: #c9acff;
+}
+
+.aura-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 350px;
+  min-height: 520px;
+}
+
+.aura-main {
+  padding: 24px 30px 30px;
+}
+
+.aura-plans {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 9px;
+}
+
+.aura-plans article {
+  position: relative;
+  display: grid;
+  gap: 5px;
+  padding: 17px;
+  border: 1px solid #2d2736;
+  border-radius: 13px;
+  background: #121016;
+}
+
+.aura-plans article.featured {
+  border-color: rgba(168, 118, 255, 0.5);
+  background: linear-gradient(145deg, rgba(116, 67, 213, 0.2), #15111d);
+}
+
+.aura-plans article > i {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  color: #c3a7ff;
+  font-size: 7px;
+  font-style: normal;
+  font-weight: 800;
+}
+
+.aura-plans span {
+  color: #9e7cff;
+  font-size: 8px;
+  font-weight: 850;
+  letter-spacing: 0.1em;
+}
+
+.aura-plans strong {
+  color: #f2edf6;
+  font-size: 15px;
+}
+
+.aura-plans small {
+  color: #756d7f;
+  font-size: 9px;
+}
+
+.aura-perks {
+  margin-top: 18px;
+  padding: 16px;
+  border: 1px solid #2a2531;
+  border-radius: 13px;
+  background: #121016;
+}
+
+.aura-perks > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.aura-perks > div span {
+  color: #aaa1b4;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+}
+
+.aura-perks > div small {
+  color: #6f6877;
+  font-size: 8px;
+}
+
+.aura-perks ul {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px 16px;
+  margin: 15px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.aura-perks li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #b7afc0;
+  font-size: 10px;
+}
+
+.aura-perks li i {
+  display: grid;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 6px;
+  background: rgba(148, 97, 243, 0.15);
+  color: #ac85ff;
+  font-size: 9px;
+  font-style: normal;
+}
+
+.aura-redeem {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 205px auto;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 13px;
+  border: 1px solid #30293a;
+  border-radius: 12px;
+  background: #19151f;
+}
+
+.aura-redeem > div {
+  display: grid;
+  gap: 3px;
+}
+
+.aura-redeem strong {
+  color: #ded7e6;
+  font-size: 11px;
+}
+
+.aura-redeem small {
+  color: #756d7e;
+  font-size: 8px;
+}
+
+.aura-redeem input,
+.aura-owner input,
+.aura-owner select {
+  height: 36px;
+  min-width: 0;
+  border: 1px solid #342c40;
+  border-radius: 8px;
+  outline: 0;
+  background: #0e0c12;
+  color: #dfd7e8;
+  padding: 0 10px;
+  font-size: 10px;
+}
+
+.aura-redeem button,
+.aura-owner form > button {
+  height: 36px;
+  padding: 0 13px;
+  border-radius: 8px;
+  background: linear-gradient(135deg, #8b61ef, #6a43cf);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 750;
+}
+
+.aura-payment-note {
+  margin: 10px 2px 0;
+  color: #6f6877;
+  font-size: 8px;
+  line-height: 1.55;
+}
+
+.aura-owner {
+  padding: 23px 20px 28px;
+  border-left: 1px solid #2b2533;
+  background: rgba(11, 9, 14, 0.45);
+}
+
+.aura-owner-title {
+  display: grid;
+  gap: 3px;
+  margin-bottom: 14px;
+}
+
+.aura-owner-title span,
+.aura-owner-list > span,
+.aura-code-list > span {
+  color: #9c7cff;
+  font-size: 8px;
+  font-weight: 850;
+  letter-spacing: 0.1em;
+}
+
+.aura-owner-title strong {
+  color: #eee8f3;
+  font-size: 16px;
+}
+
+.aura-owner-title small {
+  color: #746d7c;
+  font-size: 8px;
+}
+
+.aura-owner form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 100px auto;
+  align-items: end;
+  gap: 7px;
+  margin-top: 10px;
+  padding: 11px;
+  border: 1px solid #2b2533;
+  border-radius: 10px;
+  background: #131017;
+}
+
+.aura-owner form label {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+}
+
+.aura-owner form label span {
+  color: #756d7d;
+  font-size: 8px;
+  font-weight: 750;
+}
+
+.fresh-aura-code {
+  display: grid;
+  width: 100%;
+  gap: 3px;
+  margin-top: 8px;
+  padding: 10px;
+  border: 1px dashed rgba(179, 132, 255, 0.45);
+  border-radius: 9px;
+  background: rgba(133, 78, 224, 0.08);
+  color: #cbb4fa;
+  text-align: left;
+}
+
+.fresh-aura-code span {
+  color: #806f94;
+  font-size: 7px;
+}
+
+.fresh-aura-code strong {
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 11px;
+  letter-spacing: 0.05em;
+}
+
+.aura-owner-list,
+.aura-code-list {
+  display: grid;
+  gap: 6px;
+  margin-top: 16px;
+}
+
+.aura-owner-list article,
+.aura-code-list article {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid #29232f;
+  border-radius: 9px;
+  background: #121016;
+}
+
+.aura-owner-list article > div,
+.aura-code-list article > div {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 2px;
+}
+
+.aura-owner-list strong,
+.aura-code-list strong {
+  overflow: hidden;
+  color: #cfc7d7;
+  font-size: 9px;
+  text-overflow: ellipsis;
+}
+
+.aura-owner-list small,
+.aura-code-list small {
+  color: #706978;
+  font-size: 8px;
+}
+
+.aura-owner-list article > button,
+.aura-code-list article > button {
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: rgba(255, 103, 103, 0.08);
+  color: #ed7777;
+  font-size: 8px;
+}
+
+.aura-code-list article.disabled {
+  opacity: 0.45;
+}
+
 @media (max-width: 1120px) {
   .app-shell {
     grid-template-columns: 72px 250px minmax(410px, 1fr);
@@ -2952,6 +3586,64 @@
 
   .registration-form {
     padding: 25px 22px 28px;
+  }
+}
+
+@media (max-width: 760px) {
+  .server-overview-grid,
+  .server-health,
+  .aura-plans,
+  .aura-perks ul {
+    grid-template-columns: 1fr;
+  }
+
+  .server-settings-head {
+    align-items: flex-start;
+  }
+
+  .aura-hero {
+    grid-template-columns: 62px minmax(0, 1fr);
+    padding: 24px 20px;
+  }
+
+  .aura-orb {
+    width: 58px;
+    height: 58px;
+    border-radius: 19px;
+    font-size: 20px;
+  }
+
+  .aura-status {
+    grid-column: 1 / -1;
+  }
+
+  .aura-body {
+    grid-template-columns: 1fr;
+  }
+
+  .aura-main {
+    padding: 18px;
+  }
+
+  .aura-redeem {
+    grid-template-columns: 1fr;
+  }
+
+  .aura-owner {
+    border-top: 1px solid #2b2533;
+    border-left: 0;
+  }
+
+  .aura-owner form {
+    grid-template-columns: 1fr;
+  }
+
+  .role-identity-fields {
+    grid-template-columns: minmax(0, 1fr) 72px;
+  }
+
+  .role-identity-fields button {
+    grid-column: 1 / -1;
   }
 }
 

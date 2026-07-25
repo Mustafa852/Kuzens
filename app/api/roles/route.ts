@@ -20,11 +20,21 @@ import {
 } from "@/lib/security";
 
 type RolesPayload = {
+  action?: "save" | "create" | "delete";
   serverId?: string;
   roleId?: string;
+  name?: string;
+  color?: string;
   permissions?: number;
   assignments?: Array<{ memberTag?: string; roleId?: string }>;
 };
+
+function roleColor(value: unknown) {
+  if (typeof value !== "string" || !/^#[0-9a-f]{6}$/i.test(value)) {
+    return "#9c7cff";
+  }
+  return value.toLocaleLowerCase("en-US");
+}
 
 export async function GET(request: Request) {
   try {
@@ -78,7 +88,49 @@ export async function POST(request: Request) {
       );
     }
     await enforceRateLimit(request, "roles-update", identity.email, 20, 60 * 60_000);
+    const action = payload.action || "save";
+    const validRoles = await db
+      .select()
+      .from(roles)
+      .where(eq(roles.serverId, serverId));
+
+    if (action === "create") {
+      if (validRoles.length >= 20) {
+        return apiJson({ error: "Bir toplulukta en fazla 20 rol olabilir." }, { status: 400 });
+      }
+      const name = cleanText(payload.name, { min: 1, max: 32 });
+      const now = new Date().toISOString();
+      const role = {
+        id: `${serverId}:custom:${crypto.randomUUID().slice(0, 10)}`,
+        serverId,
+        name,
+        color: roleColor(payload.color),
+        permissions: Number.isInteger(payload.permissions)
+          ? Math.max(0, Math.min(255, Number(payload.permissions)))
+          : 192,
+        position: Math.max(...validRoles.map((item) => item.position), 0) + 1,
+        createdAt: now,
+      };
+      await db.insert(roles).values(role);
+      await writeAudit(profile.id, "roles.create", role.id, role.name, serverId);
+      return apiJson({ role }, { status: 201 });
+    }
+
     const roleId = typeof payload.roleId === "string" ? payload.roleId : "";
+    if (action === "delete") {
+      const role = validRoles.find((item) => item.id === roleId);
+      if (!role || !role.id.includes(":custom:")) {
+        return apiJson({ error: "Yalnızca özel roller silinebilir." }, { status: 400 });
+      }
+      await db
+        .update(memberRoles)
+        .set({ roleId: `${serverId}:member` })
+        .where(eq(memberRoles.roleId, role.id));
+      await db.delete(roles).where(eq(roles.id, role.id));
+      await writeAudit(profile.id, "roles.delete", role.id, role.name, serverId);
+      return apiJson({ ok: true });
+    }
+
     if (
       !roleId.startsWith(`${serverId}:`) ||
       !Number.isInteger(payload.permissions) ||
@@ -91,10 +143,6 @@ export async function POST(request: Request) {
       return apiJson({ error: "Kurucu rolünün tüm yetkileri açık kalmalı." }, { status: 400 });
     }
 
-    const validRoles = await db
-      .select()
-      .from(roles)
-      .where(eq(roles.serverId, serverId));
     const validRoleIds = new Set(validRoles.map((role) => role.id));
     if (!validRoleIds.has(roleId)) {
       return apiJson({ error: "Rol bulunamadı." }, { status: 404 });
@@ -139,7 +187,18 @@ export async function POST(request: Request) {
       validatedAssignments.push({ memberTag, roleId: assignedRoleId });
     }
 
-    await db.update(roles).set({ permissions: payload.permissions! }).where(eq(roles.id, roleId));
+    const currentRole = validRoles.find((role) => role.id === roleId)!;
+    const name =
+      roleId.endsWith(":owner")
+        ? currentRole.name
+        : cleanText(payload.name || currentRole.name, { min: 1, max: 32 });
+    const color = roleId.endsWith(":owner")
+      ? currentRole.color
+      : roleColor(payload.color || currentRole.color);
+    await db
+      .update(roles)
+      .set({ name, color, permissions: payload.permissions! })
+      .where(eq(roles.id, roleId));
     for (const assignment of validatedAssignments) {
       await db
         .insert(memberRoles)

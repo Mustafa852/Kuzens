@@ -23,6 +23,8 @@ const [
   manifestSource,
   serviceWorkerSource,
   nextConfig,
+  auraRoute,
+  schemaSource,
 ] =
   await Promise.all([
     readFile(new URL("../app/KuzensApp.tsx", import.meta.url), "utf8"),
@@ -45,6 +47,8 @@ const [
     readFile(new URL("../app/manifest.ts", import.meta.url), "utf8"),
     readFile(new URL("../public/sw.js", import.meta.url), "utf8"),
     readFile(new URL("../next.config.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/aura/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
   ]);
 
 test("keeps the application fixed to the viewport", () => {
@@ -97,6 +101,7 @@ test("enforces server-side request and abuse protections", () => {
     reactionsRoute,
     notificationsRoute,
     profileRoute,
+    auraRoute,
   ]) {
     assert.match(route, /assertTrustedMutation\(request\)/);
     assert.match(route, /enforceRateLimit/);
@@ -132,6 +137,27 @@ test("provides app-like context actions, mentions, reactions, and profile settin
   assert.match(messagesRoute, /@everyone ve @here yalnızca yetkili/);
   assert.match(messagesRoute, /messageMentions/);
   assert.match(reactionsRoute, /ALLOWED_REACTIONS/);
+});
+
+test("joins voice rooms on click and keeps the connected room independent from chat", () => {
+  assert.match(appSource, /async function joinVoice\(channel: Channel\)/);
+  assert.match(appSource, /if \(channel\.kind === "voice"\) await joinVoice\(channel\)/);
+  assert.match(appSource, /connectedVoiceChannelId/);
+  assert.doesNotMatch(
+    appSource,
+    /if \(voiceConnected && channel\.kind !== "voice"\)[\s\S]{0,80}toggleVoice/,
+  );
+});
+
+test("ships owner-managed Kuzens Aura codes without storing plaintext codes", () => {
+  assert.match(schemaSource, /auraMemberships/);
+  assert.match(schemaSource, /auraCodes/);
+  assert.match(auraRoute, /crypto\.subtle\.digest\("SHA-256"/);
+  assert.match(auraRoute, /profile\.isOwner/);
+  assert.match(auraRoute, /action === "redeem"/);
+  assert.match(auraRoute, /action === "create-code"/);
+  assert.match(auraRoute, /action === "grant"/);
+  assert.doesNotMatch(schemaSource, /plainCode|plain_code/);
 });
 
 test("ships an installable shell without caching private application data", () => {
