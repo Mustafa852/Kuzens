@@ -191,7 +191,7 @@ export function KuzensApp() {
   const voiceStream = useRef<MediaStream | null>(null);
   const displayStream = useRef<MediaStream | null>(null);
   const previewVideo = useRef<HTMLVideoElement | null>(null);
-  const messagesEnd = useRef<HTMLDivElement | null>(null);
+  const messageList = useRef<HTMLDivElement | null>(null);
 
   const selected = channels.find((channel) => channel.id === activeChannel) || channels[0];
   const selectedRole = roleItems.find((role) => role.id === selectedRoleId);
@@ -261,7 +261,12 @@ export function KuzensApp() {
   }, [activeChannel, selected?.kind]);
 
   useEffect(() => {
-    messagesEnd.current?.scrollIntoView({ behavior: "smooth" });
+    const list = messageList.current;
+    if (!list) return;
+    list.scrollTo({
+      top: list.scrollHeight,
+      behavior: "smooth",
+    });
   }, [visibleMessages.length]);
 
   useEffect(() => {
@@ -721,7 +726,7 @@ export function KuzensApp() {
           </div>
         ) : (
           <>
-            <div className="message-list">
+            <div className="message-list" ref={messageList}>
               <section className="channel-intro">
                 <span>#</span>
                 <h1>#{selected?.name}</h1>
@@ -763,7 +768,6 @@ export function KuzensApp() {
                   <p>Başka bir kelimeyle aramayı dene.</p>
                 </div>
               )}
-              <div ref={messagesEnd} />
             </div>
 
             <form className="composer-wrap" onSubmit={sendMessage}>
