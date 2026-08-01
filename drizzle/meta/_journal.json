@@ -127,6 +127,13 @@
       "when": 1784981118605,
       "tag": "0017_public_doomsday",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "6",
+      "when": 1785595424696,
+      "tag": "0018_tiny_eternals",
+      "breakpoints": true
     }
   ]
 }

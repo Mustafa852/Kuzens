@@ -41,6 +41,7 @@ import {
   readJson,
   requireIdentity,
 } from "@/lib/security";
+import { getUploads } from "@/lib/storage";
 
 export async function DELETE(request: Request) {
   try {
@@ -217,6 +218,13 @@ export async function DELETE(request: Request) {
         ),
       );
     await db.delete(profiles).where(eq(profiles.id, profile.id));
+    if (profile.avatarKey) {
+      try {
+        await getUploads().delete(profile.avatarKey);
+      } catch {
+        // Account deletion must complete even if a stale object is already unavailable.
+      }
+    }
 
     return apiJson({ ok: true });
   } catch (error) {

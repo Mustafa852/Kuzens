@@ -2,6 +2,7 @@
 
 import {
   FormEvent,
+  type ChangeEvent,
   type MouseEvent as ReactMouseEvent,
   useCallback,
   useEffect,
@@ -35,6 +36,7 @@ type ChatMessage = {
   authorProfileId?: string | null;
   authorName: string;
   authorTag: string;
+  authorAvatarUrl?: string | null;
   content: string;
   replyToId?: string | null;
   pinned?: boolean;
@@ -114,6 +116,7 @@ type Profile = {
   bio?: string;
   customStatus?: string;
   presenceStatus?: "online" | "idle" | "dnd" | "invisible";
+  avatarUrl?: string | null;
   isOwner: boolean;
 };
 
@@ -152,6 +155,7 @@ type Member = {
   customStatus?: string;
   presenceStatus?: "online" | "idle" | "dnd" | "invisible" | "offline";
   bio?: string;
+  avatarUrl?: string | null;
   role: { id: string; name: string; color: string } | null;
   roles?: Array<{ id: string; name: string; color: string }>;
 };
@@ -189,7 +193,7 @@ type FriendItem = {
   id: string;
   status: "pending" | "accepted" | "blocked";
   direction: "incoming" | "outgoing";
-  profile: { id: string; name: string; tag: string };
+  profile: { id: string; name: string; tag: string; avatarUrl?: string | null };
 };
 
 type MentionNotification = {
@@ -264,6 +268,7 @@ type DirectConversation = {
     username: string;
     bio?: string;
     status?: string;
+    avatarUrl?: string | null;
   };
   lastMessage: string;
   updatedAt: string;
@@ -278,6 +283,7 @@ type DirectMessage = {
   authorProfileId: string;
   authorName: string;
   authorUsername: string;
+  authorAvatarUrl?: string | null;
   content: string;
   editedAt?: string | null;
   deletedAt?: string | null;
@@ -601,85 +607,76 @@ function MessageText({
   );
 }
 
+type LinkPreviewData = {
+  url: string;
+  provider: string;
+  siteName: string;
+  title: string;
+  description: string;
+  imageUrl?: string | null;
+};
+
 function LinkEmbed({ content }: { content: string }) {
   const urlText = content.match(/https?:\/\/[^\s<>"']+/i)?.[0];
-  if (!urlText) return null;
-  let url: URL;
+  const [result, setResult] = useState<{
+    key: string;
+    preview: LinkPreviewData | null;
+    failed: boolean;
+  }>({ key: "", preview: null, failed: false });
+  let url: URL | null = null;
   try {
-    url = new URL(urlText);
+    url = urlText ? new URL(urlText) : null;
   } catch {
-    return null;
+    url = null;
   }
-  const isYouTube = /(^|\.)youtube\.com$|(^|\.)youtu\.be$/i.test(url.hostname);
-  const isSteam = /(^|\.)steampowered\.com$|(^|\.)steamcommunity\.com$/i.test(url.hostname);
-  const isSpotify = /(^|\.)spotify\.com$/i.test(url.hostname);
-  const isTwitch = /(^|\.)twitch\.tv$/i.test(url.hostname);
-  const isGitHub = /(^|\.)github\.com$/i.test(url.hostname);
-  const provider = isYouTube
-    ? "youtube"
-    : isSteam
-      ? "steam"
-      : isSpotify
-        ? "spotify"
-        : isTwitch
-          ? "twitch"
-          : isGitHub
-            ? "github"
-            : "web";
-  const youtubeId = isYouTube
-    ? url.hostname.includes("youtu.be")
-      ? url.pathname.split("/")[1]
-      : url.searchParams.get("v") || url.pathname.match(/\/shorts\/([^/]+)/)?.[1]
-    : null;
-  const steamId = isSteam ? url.pathname.match(/\/app\/(\d+)/)?.[1] : null;
-  const imageUrl = youtubeId
-    ? `https://i.ytimg.com/vi/${encodeURIComponent(youtubeId)}/hqdefault.jpg`
-    : steamId
-      ? `https://cdn.akamai.steamstatic.com/steam/apps/${steamId}/header.jpg`
-      : null;
-  const pathParts = url.pathname.split("/").filter(Boolean).slice(0, 3);
-  const source =
-    provider === "web" ? url.hostname.replace(/^www\./, "") : provider.toUpperCase();
-  const icon =
-    provider === "youtube"
-      ? "▶"
-      : provider === "steam"
-        ? "STEAM"
-        : provider === "spotify"
-          ? "♫"
-          : provider === "twitch"
-            ? "LIVE"
-            : provider === "github"
-              ? "GIT"
-              : "↗";
-  const title =
-    provider === "youtube"
-      ? "YouTube videosu"
-      : provider === "steam"
-        ? steamId
-          ? `Steam oyunu · #${steamId}`
-          : "Steam içeriği"
-        : provider === "spotify"
-          ? "Spotify paylaşımı"
-          : provider === "twitch"
-            ? pathParts[0]
-              ? `${pathParts[0]} canlı yayın bağlantısı`
-              : "Twitch yayını"
-            : provider === "github"
-              ? pathParts.slice(0, 2).join(" / ") || "GitHub bağlantısı"
-              : url.hostname.replace(/^www\./, "");
+
+  useEffect(() => {
+    if (!urlText) return;
+    let target: URL;
+    try {
+      target = new URL(urlText);
+    } catch {
+      return;
+    }
+    const controller = new AbortController();
+    apiFetch(`/api/link-preview?url=${encodeURIComponent(target.toString())}`, {
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        if (!response.ok) throw new Error("preview");
+        setResult({
+          key: urlText,
+          preview: (await response.json()) as LinkPreviewData,
+          failed: false,
+        });
+      })
+      .catch((error) => {
+        if ((error as Error).name !== "AbortError") {
+          setResult({ key: urlText, preview: null, failed: true });
+        }
+      });
+    return () => controller.abort();
+  }, [urlText]);
+
+  if (!urlText || !url) return null;
+  const preview = result.key === urlText ? result.preview : null;
+  const failed = result.key === urlText ? result.failed : false;
+  const provider = preview?.provider || "web";
+  const source = preview?.siteName || url.hostname.replace(/^www\./, "").toUpperCase();
+  const title = preview?.title || url.hostname.replace(/^www\./, "");
   const description =
-    provider === "web"
-      ? `${url.pathname === "/" ? "Ana sayfa" : url.pathname.slice(0, 90)} · bağlantıyı yeni sekmede aç`
-      : "Kuzens içinde güvenli bağlantı önizlemesi";
+    preview?.description ||
+    (failed
+      ? "Önizleme alınamadı · bağlantıyı yeni sekmede aç"
+      : "İçerik bilgileri hazırlanıyor…");
 
   return (
-    <a className="link-embed" href={url.toString()} target="_blank" rel="noreferrer noopener">
+    <a className="link-embed" href={url.toString()} target="_blank" rel="noreferrer noopener nofollow" referrerPolicy="no-referrer">
       <div
-        className={`embed-art ${provider}`}
-        style={imageUrl ? { backgroundImage: `linear-gradient(145deg, rgba(0,0,0,.12), rgba(0,0,0,.58)), url("${imageUrl}")` } : undefined}
+        className={`embed-art ${provider} ${preview?.imageUrl ? "has-image" : ""} ${!preview && !failed ? "is-loading" : ""}`}
+        style={preview?.imageUrl ? { backgroundImage: `linear-gradient(145deg, rgba(0,0,0,.04), rgba(0,0,0,.36)), url("${preview.imageUrl}")` } : undefined}
       >
-        <span>{icon}</span>
+        <span>{provider === "steam" ? "STEAM" : provider === "youtube" ? "▶" : "KZ"}</span>
         <div className="embed-art-glow" />
       </div>
       <div className="embed-copy">
@@ -744,16 +741,26 @@ function Avatar({
   tone = "purple",
   size = "md",
   online,
+  imageUrl,
+  status,
 }: {
   name: string;
   tone?: string;
   size?: "sm" | "md" | "lg";
   online?: boolean;
+  imageUrl?: string | null;
+  status?: "online" | "idle" | "dnd" | "invisible" | "offline";
 }) {
+  const resolvedStatus =
+    status || (typeof online === "boolean" ? (online ? "online" : "offline") : null);
   return (
     <span className={`avatar avatar-${tone} avatar-${size}`} aria-label={name}>
-      {initials(name)}
-      {typeof online === "boolean" && <i className={online ? "is-online" : ""} />}
+      {imageUrl ? (
+        // Profile images are authenticated same-origin R2 responses; the framework image proxy cannot forward that identity.
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={imageUrl} alt="" />
+      ) : initials(name)}
+      {resolvedStatus && <i className={`presence-dot presence-${resolvedStatus}`} />}
     </span>
   );
 }
@@ -839,6 +846,9 @@ export function KuzensApp() {
   const [profilePresence, setProfilePresence] = useState<
     "online" | "idle" | "dnd" | "invisible"
   >("online");
+  const [profileAvatarPreview, setProfileAvatarPreview] = useState<string | null>(null);
+  const [profileAvatarDataUrl, setProfileAvatarDataUrl] = useState<string | null>(null);
+  const [profileRemoveAvatar, setProfileRemoveAvatar] = useState(false);
   const [profileSaving, setProfileSaving] = useState(false);
   const [accountDeleteUsername, setAccountDeleteUsername] = useState("");
   const [accountDeleteConfirmation, setAccountDeleteConfirmation] = useState("");
@@ -849,6 +859,7 @@ export function KuzensApp() {
   const [mobileChannels, setMobileChannels] = useState(false);
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [profile, setProfile] = useState<Profile | null | undefined>(undefined);
+  const [splashVisible, setSplashVisible] = useState(true);
   const [registrationName, setRegistrationName] = useState("");
   const [registrationUsername, setRegistrationUsername] = useState("");
   const [registrationError, setRegistrationError] = useState("");
@@ -1078,6 +1089,11 @@ export function KuzensApp() {
   const visibleEventOccurrences = eventSelectedDay
     ? eventOccurrences.filter((occurrence) => localDateKey(occurrence.startsAt) === eventSelectedDay)
     : eventOccurrences.filter((occurrence) => new Date(occurrence.endsAt).getTime() >= Date.now());
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setSplashVisible(false), 1_850);
+    return () => window.clearTimeout(timer);
+  }, []);
 
   useEffect(() => {
     apiFetch("/api/profile")
@@ -3045,7 +3061,59 @@ export function KuzensApp() {
     setProfileBio(profile.bio || "");
     setProfileCustomStatus(profile.customStatus || "");
     setProfilePresence(profile.presenceStatus || "online");
+    setProfileAvatarPreview(profile.avatarUrl || null);
+    setProfileAvatarDataUrl(null);
+    setProfileRemoveAvatar(false);
     setModal("profile");
+  }
+
+  async function selectProfileAvatar(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    if (!["image/png", "image/jpeg", "image/webp"].includes(file.type) || file.size > 5_000_000) {
+      setToast({ text: "PNG, JPEG veya WebP biçiminde en fazla 5 MB bir fotoğraf seç.", tone: "danger" });
+      return;
+    }
+    try {
+      const bitmap = await createImageBitmap(file);
+      const side = Math.min(bitmap.width, bitmap.height);
+      const canvas = document.createElement("canvas");
+      canvas.width = 256;
+      canvas.height = 256;
+      const context = canvas.getContext("2d");
+      if (!context) throw new Error("canvas");
+      context.drawImage(
+        bitmap,
+        (bitmap.width - side) / 2,
+        (bitmap.height - side) / 2,
+        side,
+        side,
+        0,
+        0,
+        256,
+        256,
+      );
+      bitmap.close();
+      const blob = await new Promise<Blob>((resolve, reject) =>
+        canvas.toBlob(
+          (value) => (value ? resolve(value) : reject(new Error("image"))),
+          "image/webp",
+          0.84,
+        ),
+      );
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result));
+        reader.onerror = () => reject(reader.error);
+        reader.readAsDataURL(blob);
+      });
+      setProfileAvatarPreview(dataUrl);
+      setProfileAvatarDataUrl(dataUrl);
+      setProfileRemoveAvatar(false);
+    } catch {
+      setToast({ text: "Fotoğraf işlenemedi. Başka bir görsel dene.", tone: "danger" });
+    }
   }
 
   async function openPreferences() {
@@ -3112,6 +3180,8 @@ export function KuzensApp() {
           bio: profileBio,
           customStatus: profileCustomStatus,
           presenceStatus: profilePresence,
+          avatarDataUrl: profileAvatarDataUrl || undefined,
+          removeAvatar: profileRemoveAvatar,
         }),
       });
       if (!response.ok) {
@@ -4030,8 +4100,23 @@ export function KuzensApp() {
 
   return (
     <main
-      className={`app-shell font-${preferences.fontSize} density-${preferences.density} ${preferences.highContrast ? "high-contrast" : ""} ${preferences.reducedMotion ? "reduce-motion" : ""}`}
+      className={`app-shell app-shell-v3 font-${preferences.fontSize} density-${preferences.density} ${preferences.highContrast ? "high-contrast" : ""} ${preferences.reducedMotion ? "reduce-motion" : ""}`}
     >
+      {splashVisible && (
+        <div className="kuzens-splash" role="status" aria-live="polite">
+          {/* Pixel-art must stay unprocessed so its hard edges remain intentional. */}
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src="/kuzens-loading-v1.webp" alt="" />
+          <div className="splash-vignette" />
+          <div className="splash-copy">
+            <span className="splash-brand"><b>K</b><i>Z</i></span>
+            <small>KUZENS · AURA GATE</small>
+            <h1>Kuzenlerinle buluşuyorsun.</h1>
+            <p>Odalar, mesajlar ve ses bağlantın hazırlanıyor.</p>
+            <div className="splash-progress"><i /></div>
+          </div>
+        </div>
+      )}
       <aside className="server-rail" aria-label="Sunucular">
         <button className="brand-mark" aria-label="Kuzens ana sayfa">
           <span>K</span><b>Z</b>
@@ -4091,17 +4176,22 @@ export function KuzensApp() {
           </button>
         </header>
 
-        <div className="server-actions">
-          <button onClick={copyInvite}><span>↗</span> Arkadaşlarını davet et</button>
-          <button onClick={openEvents}><span>◫</span> Etkinlikler ve takvim</button>
-          <button onClick={() => void openServerGuide()}><span>✓</span> Başlangıç rehberi</button>
-          <button onClick={openRoles}><span>♢</span> Roller ve yetkiler</button>
-          {canManageServer && (
-            <button onClick={openServerSettings}><span>⚙</span> Topluluk ayarları</button>
-          )}
-          <button className="aura-entry" onClick={openAura}><span>✦</span> Kuzens Aura</button>
+        <section className="community-hub-card">
+          <div>
+            <span>KUZENS NOVA</span>
+            <strong>Topluluğun kumanda merkezi</strong>
+            <small>Davetleri, rolleri ve odaları tek yerden yönet.</small>
+          </div>
+          <button onClick={copyInvite}>Davet bağlantısı <b>↗</b></button>
+        </section>
+        <div className="sidebar-utility-grid">
+          <button onClick={openEvents}><span>◫</span><b>Etkinlik</b></button>
+          <button onClick={() => void openServerGuide()}><span>✓</span><b>Rehber</b></button>
+          <button onClick={openRoles}><span>♢</span><b>Roller</b></button>
+          {canManageServer && <button onClick={openServerSettings}><span>⚙</span><b>Ayarlar</b></button>}
+          <button className="aura-entry" onClick={openAura}><span>✦</span><b>Aura</b></button>
           {ownsActiveServer && activeServerId !== "kuzens" && (
-            <button onClick={() => void deleteActiveServer()}><span>×</span> Topluluğu sil</button>
+            <button className="danger-utility" onClick={() => void deleteActiveServer()}><span>×</span><b>Sil</b></button>
           )}
         </div>
 
@@ -4197,7 +4287,7 @@ export function KuzensApp() {
                             openContextMenu(event, { kind: "member", member })
                           }
                         >
-                          <Avatar name={member.name} size="sm" tone={toneFor(member.id)} />
+                          <Avatar name={member.name} size="sm" tone={toneFor(member.id)} imageUrl={member.avatarUrl} />
                           {member.name}
                           {member.sharing && <i>YAYIN</i>}
                         </span>
@@ -4220,7 +4310,12 @@ export function KuzensApp() {
         )}
 
         <footer className="user-dock" onDoubleClick={openProfileSettings}>
-          <Avatar name={profile?.displayName || "Savaş"} tone="purple" online />
+          <Avatar
+            name={profile?.displayName || "Savaş"}
+            tone="purple"
+            imageUrl={profile?.avatarUrl}
+            status={profile?.presenceStatus || "online"}
+          />
           <button className="user-profile-button" onClick={openProfileSettings}>
             <strong>
               {profile?.displayName || "Savaş"}
@@ -4248,6 +4343,7 @@ export function KuzensApp() {
           </button>
           <span className="header-channel-icon">{selected?.kind === "voice" ? "◖" : "#"}</span>
           <div className="channel-heading">
+            <small className="nova-breadcrumb">{activeServer.name} / {selected?.kind === "voice" ? "SES ODASI" : "METİN ODASI"}</small>
             <strong>{selected?.name || "genel"}</strong>
             <span>
               {selected?.kind === "voice"
@@ -4366,7 +4462,7 @@ export function KuzensApp() {
                   }
                 >
                   <div className="speaker-orbit">
-                    <Avatar name={member.name} tone={toneFor(member.id)} size="lg" />
+                    <Avatar name={member.name} tone={toneFor(member.id)} size="lg" imageUrl={member.avatarUrl} status={member.presenceStatus || "online"} />
                   </div>
                   <strong>{member.name}</strong>
                   <span>{member.id === profile?.id ? "Sen" : memberStatus(member)}</span>
@@ -4465,7 +4561,7 @@ export function KuzensApp() {
                       openContextMenu(event, { kind: "message", message })
                     }
                   >
-                    {!compact && <Avatar name={message.authorName} tone={message.authorName === "Savaş" ? "purple" : message.authorName === "Ece" ? "pink" : message.authorName === "Batu" ? "blue" : "orange"} />}
+                    {!compact && <Avatar name={message.authorName} imageUrl={message.authorAvatarUrl} tone={message.authorName === "Savaş" ? "purple" : message.authorName === "Ece" ? "pink" : message.authorName === "Batu" ? "blue" : "orange"} />}
                     <div className="message-content">
                       {!compact && (
                         <div className="message-meta">
@@ -4611,7 +4707,7 @@ export function KuzensApp() {
                       key={member.id}
                       onClick={() => insertMention(member.tag)}
                     >
-                      <Avatar name={member.name} tone={toneFor(member.id)} size="sm" />
+                      <Avatar name={member.name} tone={toneFor(member.id)} size="sm" imageUrl={member.avatarUrl} />
                       <span><strong>{member.name}</strong><small>{member.tag}</small></span>
                     </button>
                   ))}
@@ -4676,7 +4772,7 @@ export function KuzensApp() {
                 openContextMenu(event, { kind: "member", member })
               }
             >
-              <Avatar name={member.name} tone={toneFor(member.id)} online />
+              <Avatar name={member.name} tone={toneFor(member.id)} imageUrl={member.avatarUrl} status={member.presenceStatus || "online"} />
               <span className="member-copy"><strong>{member.name}</strong><small>{memberStatus(member)}</small></span>
               {member.id !== profile?.id && !member.role?.id.endsWith(":owner") && (
                 <span className="member-moderation">
@@ -4724,7 +4820,7 @@ export function KuzensApp() {
                 openContextMenu(event, { kind: "member", member })
               }
             >
-              <Avatar name={member.name} tone={toneFor(member.id)} online={false} />
+              <Avatar name={member.name} tone={toneFor(member.id)} imageUrl={member.avatarUrl} status="offline" />
               <span className="member-copy"><strong>{member.name}</strong><small>{memberStatus(member)}</small></span>
               {member.id !== profile?.id && !member.role?.id.endsWith(":owner") && (
                 <span className="member-moderation">
@@ -4762,7 +4858,7 @@ export function KuzensApp() {
               <span className="member-group">YASAKLILAR — {bannedMembers.length}</span>
               {bannedMembers.map((member) => (
                 <div className="member-row banned" key={member.id}>
-                  <Avatar name={member.name} tone={toneFor(member.id)} online={false} />
+                  <Avatar name={member.name} tone={toneFor(member.id)} imageUrl={member.avatarUrl} status="offline" />
                   <span className="member-copy">
                     <strong>{member.name}</strong>
                     <small>{member.reason}</small>
@@ -4849,7 +4945,7 @@ export function KuzensApp() {
                         setDirectMessages([]);
                       }}
                     >
-                      <Avatar name={conversation.profile.name} tone={toneFor(conversation.profile.id)} size="sm" />
+                      <Avatar name={conversation.profile.name} tone={toneFor(conversation.profile.id)} size="sm" imageUrl={conversation.profile.avatarUrl} />
                       <span><strong>{conversation.profile.name}</strong><small>İncelemek için aç</small></span>
                       <b>›</b>
                     </button>
@@ -4869,7 +4965,7 @@ export function KuzensApp() {
                         setDirectMessages([]);
                       }}
                     >
-                      <Avatar name={conversation.profile.name} tone={toneFor(conversation.profile.id)} />
+                      <Avatar name={conversation.profile.name} tone={toneFor(conversation.profile.id)} imageUrl={conversation.profile.avatarUrl} />
                       <span>
                         <strong>{conversation.profile.name}</strong>
                         <small>{conversation.lastMessage}</small>
@@ -4912,6 +5008,7 @@ export function KuzensApp() {
                     <Avatar
                       name={activeDirectConversation.profile.name}
                       tone={toneFor(activeDirectConversation.profile.id)}
+                      imageUrl={activeDirectConversation.profile.avatarUrl}
                       online={members.some(
                         (member) => member.id === activeDirectConversation.profile.id && member.online,
                       )}
@@ -4961,6 +5058,7 @@ export function KuzensApp() {
                         name={activeDirectConversation.profile.name}
                         tone={toneFor(activeDirectConversation.profile.id)}
                         size="lg"
+                        imageUrl={activeDirectConversation.profile.avatarUrl}
                       />
                       <h3>{activeDirectConversation.profile.name}</h3>
                       <span>@{activeDirectConversation.profile.username}</span>
@@ -4983,6 +5081,7 @@ export function KuzensApp() {
                               name={message.authorName}
                               tone={toneFor(message.authorProfileId)}
                               size="sm"
+                              imageUrl={message.authorAvatarUrl}
                             />
                           )}
                           <div>
@@ -5082,6 +5181,7 @@ export function KuzensApp() {
                       <Avatar
                         name={item.profile.name}
                         tone={toneFor(item.profile.id)}
+                        imageUrl={item.profile.avatarUrl}
                         online={members.some(
                           (member) => member.id === item.profile.id && member.online,
                         )}
@@ -5454,7 +5554,7 @@ export function KuzensApp() {
                     {members.map((member) => (
                       <label key={member.id}>
                         <span>
-                          <Avatar name={member.name} tone={toneFor(member.id)} size="sm" />
+                          <Avatar name={member.name} tone={toneFor(member.id)} size="sm" imageUrl={member.avatarUrl} />
                           <b>{member.name}</b>
                           <small>{member.roles?.map((role) => role.name).join(" · ") || "Kuzen"}</small>
                         </span>
@@ -6155,7 +6255,7 @@ export function KuzensApp() {
             </button>
             <aside className="settings-navigation">
               <div className="settings-account">
-                <Avatar name={profile.displayName} tone="purple" size="lg" online />
+                <Avatar name={profile.displayName} tone="purple" size="lg" imageUrl={profile.avatarUrl} status={profile.presenceStatus || "online"} />
                 <div>
                   <strong>{profile.displayName}</strong>
                   <span>@{profile.username}</span>
@@ -6177,7 +6277,7 @@ export function KuzensApp() {
 
               <div className="account-summary-card">
                 <div className="account-banner" />
-                <Avatar name={profile.displayName} tone="purple" size="lg" online />
+                <Avatar name={profile.displayName} tone="purple" size="lg" imageUrl={profile.avatarUrl} status={profile.presenceStatus || "online"} />
                 <div>
                   <strong>{profile.displayName}</strong>
                   <span>@{profile.username}</span>
@@ -6270,7 +6370,13 @@ export function KuzensApp() {
           >
             <button type="button" className="modal-close" onClick={() => setModal(null)} aria-label="Kapat">×</button>
             <div className="profile-settings-preview">
-              <Avatar name={profileDisplayName || profile.displayName} tone="purple" size="lg" online />
+              <Avatar
+                name={profileDisplayName || profile.displayName}
+                tone="purple"
+                size="lg"
+                imageUrl={profileAvatarPreview}
+                status={profilePresence}
+              />
               <div>
                 <strong>{profileDisplayName || profile.displayName}</strong>
                 <span>@{profileUsername || profile.username}</span>
@@ -6279,6 +6385,33 @@ export function KuzensApp() {
             </div>
             <span className="eyebrow">KULLANICI AYARLARI</span>
             <h2>Profilini düzenle</h2>
+            <div className="avatar-upload-panel">
+              <div>
+                <strong>Profil fotoğrafı</strong>
+                <span>Fotoğraf güvenli biçimde kare kırpılır ve yalnızca Kuzens üyelerine gösterilir.</span>
+              </div>
+              <label className="secondary-button avatar-file-button">
+                {profileAvatarPreview ? "Fotoğrafı değiştir" : "Fotoğraf ekle"}
+                <input
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp"
+                  onChange={selectProfileAvatar}
+                />
+              </label>
+              {profileAvatarPreview && (
+                <button
+                  type="button"
+                  className="ghost-danger-button"
+                  onClick={() => {
+                    setProfileAvatarPreview(null);
+                    setProfileAvatarDataUrl(null);
+                    setProfileRemoveAvatar(true);
+                  }}
+                >
+                  Kaldır
+                </button>
+              )}
+            </div>
             <div className="settings-grid">
               <label className="settings-field">
                 <span>Görünen ad</span>
@@ -6302,6 +6435,13 @@ export function KuzensApp() {
                 <option value="invisible">Görünmez</option>
               </select>
             </label>
+            <div className="presence-preview" aria-live="polite">
+              <i className={`presence-dot presence-${profilePresence}`} />
+              <div>
+                <strong>{profilePresence === "online" ? "Çevrimiçi" : profilePresence === "idle" ? "Boşta" : profilePresence === "dnd" ? "Rahatsız etmeyin" : "Görünmez"}</strong>
+                <span>{profilePresence === "dnd" ? "Bildirim uyarıları sessize alınır." : profilePresence === "invisible" ? "Başkalarına çevrimdışı görünürsün." : "Durumun profil fotoğrafının altında gösterilir."}</span>
+              </div>
+            </div>
             <label className="settings-field">
               <span>Hakkımda</span>
               <textarea maxLength={190} rows={4} value={profileBio} onChange={(event) => setProfileBio(event.target.value)} placeholder="Kendinden biraz bahset…" />
@@ -6325,7 +6465,8 @@ export function KuzensApp() {
               name={viewingMember.name}
               tone={toneFor(viewingMember.id)}
               size="lg"
-              online={viewingMember.online}
+              imageUrl={viewingMember.avatarUrl}
+              status={viewingMember.presenceStatus || (viewingMember.online ? "online" : "offline")}
             />
             <h2>{viewingMember.name}</h2>
             <span className="member-profile-tag">{viewingMember.tag}</span>
@@ -7304,7 +7445,7 @@ export function KuzensApp() {
           {contextMenu.kind === "member" && contextMenu.member && (
             <>
               <div className="context-member">
-                <Avatar name={contextMenu.member.name} tone={toneFor(contextMenu.member.id)} size="sm" online={contextMenu.member.online} />
+                <Avatar name={contextMenu.member.name} tone={toneFor(contextMenu.member.id)} size="sm" imageUrl={contextMenu.member.avatarUrl} status={contextMenu.member.presenceStatus || (contextMenu.member.online ? "online" : "offline")} />
                 <span><strong>{contextMenu.member.name}</strong><small>{contextMenu.member.tag}</small></span>
               </div>
               <button onClick={() => { setViewingMember(contextMenu.member!); setModal("memberProfile"); }}><span>◉</span>Profili görüntüle</button>

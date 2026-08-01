@@ -11,6 +11,7 @@ import {
   readJson,
   requireIdentity,
 } from "@/lib/security";
+import { avatarUrlFor } from "@/lib/profile-view";
 
 type FriendPayload = {
   action?: "request" | "accept" | "remove" | "block";
@@ -61,6 +62,7 @@ export async function GET(request: Request) {
               id: other.id,
               name: other.displayName,
               tag: `@${other.username}`,
+              avatarUrl: avatarUrlFor(other.id, other.avatarKey),
             }
           : null,
       };

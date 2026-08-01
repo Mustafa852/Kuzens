@@ -24,6 +24,7 @@ import {
   readJson,
   requireIdentity,
 } from "@/lib/security";
+import { avatarUrlFor } from "@/lib/profile-view";
 
 export async function GET(request: Request) {
   try {
@@ -87,6 +88,7 @@ export async function GET(request: Request) {
           customStatus: profile.customStatus,
           presenceStatus: online ? profile.presenceStatus : "offline",
           bio: profile.bio,
+          avatarUrl: avatarUrlFor(profile.id, profile.avatarKey),
           role: role ? { id: role.id, name: role.name, color: role.color } : null,
           roles: memberRoleRows.map((item) => ({
             id: item.id,

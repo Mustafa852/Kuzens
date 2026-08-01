@@ -22,6 +22,7 @@ import {
   requireIdentity,
 } from "@/lib/security";
 import { getDb } from "@/db";
+import { avatarUrlFor } from "@/lib/profile-view";
 
 type DirectPayload = {
   action?: "start" | "send" | "privacy" | "read" | "request";
@@ -111,6 +112,7 @@ export async function GET(request: Request) {
           authorProfileId: directMessages.authorProfileId,
           authorName: profiles.displayName,
           authorUsername: profiles.username,
+          authorAvatarKey: profiles.avatarKey,
           content: directMessages.content,
           editedAt: directMessages.editedAt,
           deletedAt: directMessages.deletedAt,
@@ -121,7 +123,12 @@ export async function GET(request: Request) {
         .where(eq(directMessages.conversationId, id))
         .orderBy(desc(directMessages.createdAt))
         .limit(250);
-      return apiJson({ messages: rows.reverse() });
+      return apiJson({
+        messages: rows.reverse().map(({ authorAvatarKey, ...message }) => ({
+          ...message,
+          authorAvatarUrl: avatarUrlFor(message.authorProfileId, authorAvatarKey),
+        })),
+      });
     }
 
     const memberships = await db
@@ -233,6 +240,7 @@ export async function GET(request: Request) {
             username: other.username,
             bio: other.bio,
             status: other.customStatus,
+            avatarUrl: avatarUrlFor(other.id, other.avatarKey),
           },
           lastMessage: lastMessage?.deletedAt
             ? "Mesaj silindi"
@@ -459,6 +467,7 @@ export async function POST(request: Request) {
             username: target.username,
             bio: target.bio,
             status: target.customStatus,
+            avatarUrl: avatarUrlFor(target.id, target.avatarKey),
           },
           lastMessage: "Yeni konuşma",
           updatedAt: now,
@@ -518,6 +527,7 @@ export async function POST(request: Request) {
         authorProfileId: profile.id,
         authorName: profile.displayName,
         authorUsername: profile.username,
+        authorAvatarUrl: avatarUrlFor(profile.id, profile.avatarKey),
         content,
         editedAt: null,
         deletedAt: null,

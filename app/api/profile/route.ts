@@ -1,5 +1,7 @@
 import { eq, sql } from "drizzle-orm";
 import { invites, memberRoles, profiles, servers } from "@/db/schema";
+import { publicProfile } from "@/lib/profile-view";
+import { getUploads } from "@/lib/storage";
 import {
   DEFAULT_SERVER_ID,
   ensureCommunity,
@@ -18,6 +20,39 @@ import {
 } from "@/lib/security";
 
 const LEGAL_VERSION = "2026-07-25.v1";
+
+function decodeAvatar(value: unknown) {
+  if (typeof value !== "string") {
+    throw new Error("Profil fotoğrafı verisi geçersiz.");
+  }
+  const match = value.match(
+    /^data:(image\/(?:webp|png|jpeg));base64,([A-Za-z0-9+/=]+)$/,
+  );
+  if (!match) throw new Error("Profil fotoğrafı WebP, PNG veya JPEG olmalı.");
+  const binary = atob(match[2]);
+  if (binary.length < 32 || binary.length > 600_000) {
+    throw new Error("Profil fotoğrafı en fazla 600 KB olabilir.");
+  }
+  const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  const isPng =
+    bytes[0] === 0x89 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x4e &&
+    bytes[3] === 0x47;
+  const isJpeg =
+    bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+  const isWebp =
+    String.fromCharCode(...bytes.slice(0, 4)) === "RIFF" &&
+    String.fromCharCode(...bytes.slice(8, 12)) === "WEBP";
+  if (
+    (match[1] === "image/png" && !isPng) ||
+    (match[1] === "image/jpeg" && !isJpeg) ||
+    (match[1] === "image/webp" && !isWebp)
+  ) {
+    throw new Error("Profil fotoğrafının dosya imzası doğrulanamadı.");
+  }
+  return { bytes, contentType: match[1] };
+}
 
 type RegistrationPayload = {
   displayName?: string;
@@ -61,7 +96,7 @@ export async function GET(request: Request) {
         .onConflictDoNothing();
     }
     return apiJson({
-      profile: profile ?? null,
+      profile: profile ? publicProfile(profile) : null,
       identity: {
         displayName: identity.displayName,
         suggestedUsername: identity.email
@@ -105,7 +140,7 @@ export async function POST(request: Request) {
 
     const db = await ensureCommunity();
     const existing = await findProfile(identity);
-    if (existing) return apiJson({ profile: existing });
+    if (existing) return apiJson({ profile: publicProfile(existing) });
 
     const isOwner = isPrimaryOwnerEmail(identity.email);
     let invite: typeof invites.$inferSelect | undefined;
@@ -167,7 +202,7 @@ export async function POST(request: Request) {
         .set({ uses: sql`${invites.uses} + 1` })
         .where(eq(invites.id, invite.id));
     }
-    return apiJson({ profile }, { status: 201 });
+    return apiJson({ profile: publicProfile(profile) }, { status: 201 });
   } catch (error) {
     const duplicate =
       error instanceof Error && /unique|constraint/i.test(error.message);
@@ -189,7 +224,9 @@ export async function PATCH(request: Request) {
       bio?: string;
       customStatus?: string;
       presenceStatus?: "online" | "idle" | "dnd" | "invisible";
-    }>(request, 8_192);
+      avatarDataUrl?: string;
+      removeAvatar?: boolean;
+    }>(request, 900_000);
     const existing = await findProfile(identity);
     if (!existing) {
       return apiJson({ error: "Profil bulunamadı." }, { status: 404 });
@@ -227,19 +264,65 @@ export async function PATCH(request: Request) {
         .set({ memberTag: `@${username}` })
         .where(eq(memberRoles.memberTag, `@${existing.username}`));
     }
+    let avatarKey = existing.avatarKey;
+    const previousAvatarKey = existing.avatarKey;
+    if (payload.removeAvatar === true) {
+      avatarKey = null;
+    }
+    if (payload.avatarDataUrl) {
+      let decoded: ReturnType<typeof decodeAvatar>;
+      try {
+        decoded = decodeAvatar(payload.avatarDataUrl);
+      } catch (error) {
+        return apiJson(
+          {
+            error:
+              error instanceof Error
+                ? error.message
+                : "Profil fotoğrafı işlenemedi.",
+          },
+          { status: 400 },
+        );
+      }
+      const extension =
+        decoded.contentType === "image/png"
+          ? "png"
+          : decoded.contentType === "image/jpeg"
+            ? "jpg"
+            : "webp";
+      avatarKey = `avatars/${existing.id}/${crypto.randomUUID()}.${extension}`;
+      await getUploads().put(avatarKey, decoded.bytes, {
+        httpMetadata: {
+          contentType: decoded.contentType,
+          cacheControl: "private, max-age=31536000, immutable",
+        },
+        customMetadata: { ownerProfileId: existing.id },
+      });
+    }
     await db
       .update(profiles)
-      .set({ displayName, username, bio, customStatus, presenceStatus })
+      .set({
+        displayName,
+        username,
+        bio,
+        customStatus,
+        presenceStatus,
+        avatarKey,
+      })
       .where(eq(profiles.id, existing.id));
+    if (previousAvatarKey && previousAvatarKey !== avatarKey) {
+      await getUploads().delete(previousAvatarKey).catch(() => undefined);
+    }
     return apiJson({
-      profile: {
+      profile: publicProfile({
         ...existing,
         displayName,
         username,
         bio,
         customStatus,
         presenceStatus,
-      },
+        avatarKey,
+      }),
     });
   } catch (error) {
     return apiError(error);

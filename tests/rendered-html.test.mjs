@@ -35,6 +35,9 @@ const [
   pollsRoute,
   threadsRoute,
   serverGuideRoute,
+  linkPreviewRoute,
+  avatarRoute,
+  storageSource,
 ] =
   await Promise.all([
     readFile(new URL("../app/KuzensApp.tsx", import.meta.url), "utf8"),
@@ -69,6 +72,9 @@ const [
     readFile(new URL("../app/api/polls/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/threads/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/server-guide/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/link-preview/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/avatar/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/storage.ts", import.meta.url), "utf8"),
   ]);
 
 const apiRoot = new URL("../app/api/", import.meta.url);
@@ -198,9 +204,7 @@ test("provides app-like context actions, mentions, reactions, and profile settin
   assert.match(appSource, /inline-mention/);
   assert.match(appSource, /toggleReaction/);
   assert.match(appSource, /profile-settings-modal/);
-  assert.match(appSource, /isSpotify/);
-  assert.match(appSource, /isTwitch/);
-  assert.match(appSource, /isGitHub/);
+  assert.match(appSource, /api\/link-preview/);
   assert.match(messagesRoute, /@everyone ve @here yalnızca yetkili/);
   assert.match(messagesRoute, /messageMentions/);
   assert.match(reactionsRoute, /ALLOWED_REACTIONS/);
@@ -420,4 +424,43 @@ test("ships an installable shell without caching private application data", () =
   assert.match(serviceWorkerSource, /skipWaiting/);
   assert.doesNotMatch(serviceWorkerSource, /fetch|caches\./);
   assert.match(layoutSource, /favicon\.svg/);
+});
+
+test("uses an original Kuzens loading scene and the distinct Nova interface", async () => {
+  const loadingImage = await readFile(new URL("../public/kuzens-loading-v1.webp", import.meta.url));
+  assert.ok(loadingImage.byteLength > 100_000);
+  assert.match(appSource, /kuzens-loading-v1\.webp/);
+  assert.match(appSource, /Kuzenlerinle buluşuyorsun/);
+  assert.match(appSource, /app-shell app-shell-v3/);
+  assert.match(appSource, /community-hub-card/);
+  assert.match(appStyles, /Kuzens Nova/);
+  assert.match(appStyles, /\.kuzens-splash/);
+});
+
+test("fetches rich link metadata server-side without becoming an open proxy", () => {
+  assert.match(schemaSource, /linkPreviews/);
+  assert.match(linkPreviewRoute, /safeRemoteUrl/);
+  assert.match(linkPreviewRoute, /isPrivateIpv4/);
+  assert.match(linkPreviewRoute, /store\.steampowered\.com\/api\/appdetails/);
+  assert.match(linkPreviewRoute, /youtube\.com\/oembed/);
+  assert.match(linkPreviewRoute, /og:title/);
+  assert.match(linkPreviewRoute, /linkPreviews\.imageUrl/);
+  assert.match(linkPreviewRoute, /IMAGE_LIMIT/);
+  assert.match(linkPreviewRoute, /enforceRateLimit/);
+  assert.doesNotMatch(appSource, /dangerouslySetInnerHTML/);
+});
+
+test("stores validated profile photos privately and renders real presence states", () => {
+  assert.match(schemaSource, /avatarKey/);
+  assert.match(storageSource, /UPLOADS/);
+  assert.match(profileRoute, /webp\|png\|jpeg/);
+  assert.match(profileRoute, /600_000/);
+  assert.match(profileRoute, /getUploads\(\)\.put/);
+  assert.match(avatarRoute, /requireIdentity/);
+  assert.match(avatarRoute, /requireProfile/);
+  assert.match(appSource, /selectProfileAvatar/);
+  assert.match(appSource, /profileAvatarDataUrl/);
+  assert.match(appStyles, /\.presence-dnd/);
+  assert.match(appStyles, /\.presence-idle/);
+  assert.match(appStyles, /\.presence-invisible/);
 });

@@ -67,6 +67,7 @@ export const profiles = sqliteTable(
     username: text("username").notNull(),
     bio: text("bio").notNull().default(""),
     customStatus: text("custom_status").notNull().default(""),
+    avatarKey: text("avatar_key"),
     presenceStatus: text("presence_status", {
       enum: ["online", "idle", "dnd", "invisible"],
     })
@@ -83,6 +84,24 @@ export const profiles = sqliteTable(
   (table) => [
     uniqueIndex("profiles_email_idx").on(table.email),
     uniqueIndex("profiles_username_idx").on(table.username),
+  ],
+);
+
+export const linkPreviews = sqliteTable(
+  "link_previews",
+  {
+    id: text("id").primaryKey(),
+    url: text("url").notNull(),
+    provider: text("provider").notNull().default("web"),
+    siteName: text("site_name").notNull(),
+    title: text("title").notNull(),
+    description: text("description").notNull().default(""),
+    imageUrl: text("image_url"),
+    fetchedAt: text("fetched_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("link_previews_url_idx").on(table.url),
+    index("link_previews_fetched_idx").on(table.fetchedAt),
   ],
 );
 

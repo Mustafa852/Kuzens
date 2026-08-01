@@ -32,6 +32,7 @@ import {
   requireIdentity,
 } from "@/lib/security";
 import { autoModError, checkAutoModeration } from "@/lib/automod";
+import { avatarUrlFor } from "@/lib/profile-view";
 
 type MessagePayload = {
   id?: string;
@@ -78,6 +79,18 @@ async function decorateMessages(
       ),
   ]);
   const mentioned = new Set(mentionRows.map((item) => item.messageId));
+  const authorIds = Array.from(
+    new Set(rows.flatMap((message) => message.authorProfileId ? [message.authorProfileId] : [])),
+  );
+  const authorRows = authorIds.length
+    ? await db
+        .select({ id: profiles.id, avatarKey: profiles.avatarKey })
+        .from(profiles)
+        .where(inArray(profiles.id, authorIds))
+    : [];
+  const authorAvatarById = new Map(
+    authorRows.map((author) => [author.id, avatarUrlFor(author.id, author.avatarKey)]),
+  );
   const blockedProfileIds = new Set(
     blockedRows.map((item) =>
       item.requesterProfileId === profileId
@@ -141,6 +154,9 @@ async function decorateMessages(
       : [];
     return {
       ...message,
+      authorAvatarUrl: message.authorProfileId
+        ? authorAvatarById.get(message.authorProfileId) || null
+        : null,
       reactions: Array.from(grouped.values()),
       mentionedMe: mentioned.has(message.id),
       blockedAuthor: Boolean(
@@ -429,7 +445,14 @@ export async function POST(request: Request) {
         .onConflictDoNothing();
     }
     return apiJson(
-      { message: { ...message, reactions: [], mentionedMe: false } },
+      {
+        message: {
+          ...message,
+          authorAvatarUrl: avatarUrlFor(profile.id, profile.avatarKey),
+          reactions: [],
+          mentionedMe: false,
+        },
+      },
       { status: 201 },
     );
   } catch (error) {
