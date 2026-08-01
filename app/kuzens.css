@@ -8563,6 +8563,11 @@
 @keyframes splash-camera { from { transform: scale(1.045); filter: brightness(.65); } to { transform: scale(1); filter: brightness(1); } }
 @keyframes splash-load { from { transform: scaleX(0); } to { transform: scaleX(1); } }
 
+.message {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 76px;
+}
+
 .copy-backdrop {
   z-index: 140;
 }

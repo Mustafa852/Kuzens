@@ -314,6 +314,7 @@ type AppPreferences = {
   echoCancellation: boolean;
   noiseSuppression: boolean;
   autoGainControl: boolean;
+  noiseFilterStrength: "balanced" | "strong";
 };
 
 type DirectConversation = {
@@ -447,6 +448,7 @@ const defaultPreferences: AppPreferences = {
   echoCancellation: true,
   noiseSuppression: true,
   autoGainControl: true,
+  noiseFilterStrength: "strong",
 };
 
 type VoiceProcessingStatus = {
@@ -454,6 +456,19 @@ type VoiceProcessingStatus = {
   noiseSuppression: boolean;
   autoGainControl: boolean;
   voiceIsolation: boolean;
+  enhancedNoiseFilter: boolean;
+};
+
+type VoiceAudioPipeline = {
+  rawStream: MediaStream;
+  outputStream: MediaStream;
+  context: AudioContext;
+};
+
+type PreparedVoiceInput = {
+  stream: MediaStream;
+  pipeline: VoiceAudioPipeline | null;
+  status: VoiceProcessingStatus;
 };
 
 function audioConstraintsFor(preferences: AppPreferences): MediaTrackConstraints {
@@ -468,13 +483,20 @@ function audioConstraintsFor(preferences: AppPreferences): MediaTrackConstraints
     noiseSuppression: preferences.noiseSuppression,
     autoGainControl: preferences.autoGainControl,
   } as MediaTrackConstraints & { voiceIsolation?: boolean };
+  if (supported.channelCount) constraints.channelCount = { ideal: 1 };
+  if (supported.sampleRate) constraints.sampleRate = { ideal: 48_000 };
+  if (supported.sampleSize) constraints.sampleSize = { ideal: 16 };
+  if (supported.latency) constraints.latency = { ideal: 0.01 };
   if (supported.voiceIsolation) {
     constraints.voiceIsolation = preferences.noiseSuppression;
   }
   return constraints;
 }
 
-function processingStatusFor(track?: MediaStreamTrack | null): VoiceProcessingStatus {
+function processingStatusFor(
+  track?: MediaStreamTrack | null,
+  enhancedNoiseFilter = false,
+): VoiceProcessingStatus {
   const settings = (track?.getSettings() || {}) as MediaTrackSettings & {
     voiceIsolation?: boolean;
   };
@@ -483,7 +505,102 @@ function processingStatusFor(track?: MediaStreamTrack | null): VoiceProcessingSt
     noiseSuppression: settings.noiseSuppression === true,
     autoGainControl: settings.autoGainControl === true,
     voiceIsolation: settings.voiceIsolation === true,
+    enhancedNoiseFilter,
   };
+}
+
+async function disposeVoiceAudioPipeline(pipeline: VoiceAudioPipeline | null) {
+  if (!pipeline) return;
+  pipeline.rawStream.getTracks().forEach((track) => track.stop());
+  pipeline.outputStream.getTracks().forEach((track) => track.stop());
+  if (pipeline.context.state !== "closed") {
+    await pipeline.context.close().catch(() => undefined);
+  }
+}
+
+async function prepareVoiceInput(preferences: AppPreferences): Promise<PreparedVoiceInput> {
+  const rawStream = await navigator.mediaDevices.getUserMedia({
+    audio: audioConstraintsFor(preferences),
+  });
+  const rawTrack = rawStream.getAudioTracks()[0];
+  if (!rawTrack) {
+    rawStream.getTracks().forEach((track) => track.stop());
+    throw new Error("Mikrofon ses yolu oluşturulamadı.");
+  }
+  rawTrack.contentHint = "speech";
+  const nativeStatus = processingStatusFor(rawTrack);
+  if (!preferences.noiseSuppression) {
+    return { stream: rawStream, pipeline: null, status: nativeStatus };
+  }
+
+  const AudioContextClass = window.AudioContext ||
+    (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+  if (!AudioContextClass) {
+    return { stream: rawStream, pipeline: null, status: nativeStatus };
+  }
+
+  let context: AudioContext | null = null;
+  try {
+    try {
+      context = new AudioContextClass({ latencyHint: "interactive", sampleRate: 48_000 });
+    } catch {
+      context = new AudioContextClass({ latencyHint: "interactive" });
+    }
+    await context.resume();
+    const source = context.createMediaStreamSource(rawStream);
+    const highPass = context.createBiquadFilter();
+    highPass.type = "highpass";
+    highPass.frequency.setValueAtTime(90, context.currentTime);
+    highPass.Q.setValueAtTime(0.72, context.currentTime);
+
+    const compressor = context.createDynamicsCompressor();
+    compressor.threshold.setValueAtTime(-25, context.currentTime);
+    compressor.knee.setValueAtTime(18, context.currentTime);
+    compressor.ratio.setValueAtTime(3.5, context.currentTime);
+    compressor.attack.setValueAtTime(0.004, context.currentTime);
+    compressor.release.setValueAtTime(0.18, context.currentTime);
+    const destination = context.createMediaStreamDestination();
+
+    source.connect(highPass);
+    let tail: AudioNode = highPass;
+    if (context.audioWorklet && typeof AudioWorkletNode !== "undefined") {
+      await context.audioWorklet.addModule("/audio/kuzens-noise-gate.js");
+      const gate = new AudioWorkletNode(context, "kuzens-noise-gate", {
+        parameterData: {
+          threshold: preferences.noiseFilterStrength === "strong" ? 0.006 : 0.0035,
+          floor: preferences.noiseFilterStrength === "strong" ? 0.035 : 0.1,
+        },
+      });
+      tail.connect(gate);
+      tail = gate;
+    }
+    tail.connect(compressor);
+    compressor.connect(destination);
+
+    const outputTrack = destination.stream.getAudioTracks()[0];
+    if (!outputTrack) throw new Error("İşlenmiş mikrofon yolu oluşturulamadı.");
+    outputTrack.contentHint = "speech";
+    const outputStream = new MediaStream([outputTrack]);
+    return {
+      stream: outputStream,
+      pipeline: { rawStream, outputStream, context },
+      status: processingStatusFor(rawTrack, true),
+    };
+  } catch {
+    if (context && context.state !== "closed") await context.close().catch(() => undefined);
+    return { stream: rawStream, pipeline: null, status: nativeStatus };
+  }
+}
+
+async function configureAudioSender(sender: RTCRtpSender, bitrate: number) {
+  try {
+    const parameters = sender.getParameters();
+    if (!parameters.encodings.length) parameters.encodings = [{}];
+    parameters.encodings[0].maxBitrate = Math.max(24_000, Math.min(384_000, bitrate));
+    await sender.setParameters(parameters);
+  } catch {
+    // Some WebRTC engines lock encoding parameters; Opus remains the browser fallback.
+  }
 }
 
 type ContextMenuState = {
@@ -585,6 +702,21 @@ function mergeMessages(current: ChatMessage[], incoming: ChatMessage[]) {
   const merged = new Map(current.map((message) => [message.id, message]));
   for (const message of incoming) merged.set(message.id, message);
   return Array.from(merged.values()).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
+function recordsEqual<T>(current: T[], next: T[]) {
+  if (current === next) return true;
+  if (current.length !== next.length) return false;
+  for (let index = 0; index < current.length; index += 1) {
+    if (JSON.stringify(current[index]) !== JSON.stringify(next[index])) return false;
+  }
+  return true;
+}
+
+function stringSetsEqual(current: Set<string>, next: Set<string>) {
+  if (current.size !== next.size) return false;
+  for (const value of next) if (!current.has(value)) return false;
+  return true;
 }
 
 function matchesSearch(message: ChatMessage, rawSearch: string) {
@@ -1214,6 +1346,8 @@ export function KuzensApp() {
   const [installPrompt, setInstallPrompt] = useState<Event | null>(null);
   const [installedApp, setInstalledApp] = useState(false);
   const voiceStream = useRef<MediaStream | null>(null);
+  const voiceAudioPipeline = useRef<VoiceAudioPipeline | null>(null);
+  const voiceBitrateRef = useRef(64_000);
   const displayStream = useRef<MediaStream | null>(null);
   const previewVideo = useRef<HTMLVideoElement | null>(null);
   const messageList = useRef<HTMLDivElement | null>(null);
@@ -1235,6 +1369,7 @@ export function KuzensApp() {
   const selected = channels.find((channel) => channel.id === activeChannel) || channels[0];
   const connectedVoiceChannel =
     channels.find((channel) => channel.id === connectedVoiceChannelId) || null;
+  const connectedVoiceBitrate = connectedVoiceChannel?.bitrate || 64_000;
   const activeDirectConversation =
     directConversations.find((conversation) => conversation.id === activeDirectConversationId) ||
     directRequests.find((conversation) => conversation.id === activeDirectConversationId) ||
@@ -1309,6 +1444,18 @@ export function KuzensApp() {
   const canShareInConnectedVoice =
     !connectedVoiceChannel ||
     (((connectedVoiceChannel.permissions ?? permissions) & 128) !== 0);
+  const connectedVoiceParticipantKey = useMemo(
+    () =>
+      members
+        .filter(
+          (member) =>
+            member.voiceChannelId === connectedVoiceChannelId && member.id !== profile?.id,
+        )
+        .map((member) => member.id)
+        .sort()
+        .join(","),
+    [connectedVoiceChannelId, members, profile?.id],
+  );
   const ownsActiveServer = activeServer.ownerProfileId === profile?.id;
   const mentionQuery = useMemo(() => {
     const match = draft.match(/(?:^|\s)@([a-z0-9_ğüşöçı-]*)$/i);
@@ -1480,13 +1627,20 @@ export function KuzensApp() {
   useEffect(() => {
     if (!profile || !activeServerId || !activeChannel) return;
     let cancelled = false;
+    let syncing = false;
+    let syncedAt = "";
+    let lastFullSync = 0;
     async function syncMessages(initial = false) {
+      if (syncing || cancelled) return;
+      syncing = true;
       if (initial) setLoadingMessages(true);
       try {
         const query = new URLSearchParams({
           channel: activeChannel,
           server: activeServerId,
         });
+        const fullSync = initial || !syncedAt || Date.now() - lastFullSync > 15_000;
+        if (!fullSync) query.set("after", syncedAt);
         const response = await apiFetch(`/api/messages?${query.toString()}`);
         if (!response.ok) return;
         const data = (await response.json()) as {
@@ -1494,50 +1648,72 @@ export function KuzensApp() {
           syncedAt?: string;
         };
         if (!cancelled) {
+          if (data.syncedAt) syncedAt = data.syncedAt;
+          if (fullSync) lastFullSync = Date.now();
           setMessages((current) => {
             const otherChannels = current.filter(
               (message) => message.channelId !== activeChannel,
             );
-            const currentChannel = initial
-              ? []
-              : current.filter((message) => message.channelId === activeChannel);
+            const existingChannel = current.filter(
+              (message) => message.channelId === activeChannel,
+            );
+            const currentChannel = initial ? [] : existingChannel;
+            const mergedChannel = mergeMessages(currentChannel, data.messages || []);
+            if (recordsEqual(existingChannel, mergedChannel)) return current;
             return [
               ...otherChannels,
-              ...mergeMessages(currentChannel, data.messages || []),
+              ...mergedChannel,
             ];
           });
         }
       } finally {
+        syncing = false;
         if (!cancelled && initial) setLoadingMessages(false);
       }
     }
     void syncMessages(true);
     const timer = window.setInterval(() => {
       if (document.visibilityState === "visible") void syncMessages(false);
-    }, 5_000);
+    }, 2_500);
+    const catchUp = () => {
+      if (document.visibilityState === "visible") void syncMessages(false);
+    };
+    document.addEventListener("visibilitychange", catchUp);
+    window.addEventListener("online", catchUp);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", catchUp);
+      window.removeEventListener("online", catchUp);
     };
   }, [activeChannel, activeServerId, selected?.kind, profile]);
 
   useEffect(() => {
     if (!profile || !activeServerId) return;
     let cancelled = false;
+    let loadingMembers = false;
     async function loadMembers() {
-      const response = await apiFetch(
-        `/api/members?server=${encodeURIComponent(activeServerId)}`,
-      );
-      if (!response.ok) return;
-      const data = (await response.json()) as {
-        members?: Member[];
-        banned?: BannedMember[];
-        permissions?: number;
-      };
-      if (!cancelled) {
-        setMembers(data.members || []);
-        setBannedMembers(data.banned || []);
-        setPermissions(data.permissions || 0);
+      if (loadingMembers || cancelled) return;
+      loadingMembers = true;
+      try {
+        const response = await apiFetch(
+          `/api/members?server=${encodeURIComponent(activeServerId)}`,
+        );
+        if (!response.ok) return;
+        const data = (await response.json()) as {
+          members?: Member[];
+          banned?: BannedMember[];
+          permissions?: number;
+        };
+        if (!cancelled) {
+          const nextMembers = data.members || [];
+          const nextBanned = data.banned || [];
+          setMembers((current) => recordsEqual(current, nextMembers) ? current : nextMembers);
+          setBannedMembers((current) => recordsEqual(current, nextBanned) ? current : nextBanned);
+          setPermissions(data.permissions || 0);
+        }
+      } finally {
+        loadingMembers = false;
       }
     }
     async function sendPresence() {
@@ -1553,49 +1729,73 @@ export function KuzensApp() {
     }
     void sendPresence().then(loadMembers);
     const presenceTimer = window.setInterval(() => void sendPresence(), 25_000);
-    const membersTimer = window.setInterval(() => void loadMembers(), 10_000);
+    const membersTimer = window.setInterval(() => {
+      if (voiceConnected || document.visibilityState === "visible") void loadMembers();
+    }, voiceConnected ? 2_000 : 8_000);
+    const catchUp = () => {
+      if (document.visibilityState === "visible") void loadMembers();
+    };
+    document.addEventListener("visibilitychange", catchUp);
     return () => {
       cancelled = true;
       window.clearInterval(presenceTimer);
       window.clearInterval(membersTimer);
+      document.removeEventListener("visibilitychange", catchUp);
     };
   }, [activeServerId, connectedVoiceChannelId, profile, sharing, voiceConnected]);
 
   useEffect(() => {
     if (!profile || !activeServerId) return;
     let stopped = false;
+    let syncingStates = false;
     async function syncChannelStates() {
-      const response = await apiFetch(
-        `/api/channel-state?server=${encodeURIComponent(activeServerId)}`,
-      );
-      if (!response.ok || stopped) return;
-      const data = (await response.json()) as {
-        states?: Array<{
-          channelId: string;
-          unreadCount: number;
-          mentionCount: number;
-          level: "all" | "mentions" | "none";
-          showUnread: boolean;
-        }>;
-      };
-      const stateMap = new Map((data.states || []).map((item) => [item.channelId, item]));
-      setChannels((current) =>
-        current.map((channel) => {
+      if (syncingStates || stopped) return;
+      syncingStates = true;
+      try {
+        const response = await apiFetch(
+          `/api/channel-state?server=${encodeURIComponent(activeServerId)}`,
+        );
+        if (!response.ok || stopped) return;
+        const data = (await response.json()) as {
+          states?: Array<{
+            channelId: string;
+            unreadCount: number;
+            mentionCount: number;
+            level: "all" | "mentions" | "none";
+            showUnread: boolean;
+          }>;
+        };
+        const stateMap = new Map((data.states || []).map((item) => [item.channelId, item]));
+        setChannels((current) => {
+          let changed = false;
+          const next = current.map((channel) => {
           const state = stateMap.get(channel.id);
-          return state
-            ? {
-                ...channel,
-                unreadCount: state.unreadCount,
-                mentionCount: state.mentionCount,
-                notificationLevel: state.level,
-                showUnread: state.showUnread,
-              }
-            : channel;
-        }),
-      );
+            if (!state) return channel;
+            if (
+              channel.unreadCount === state.unreadCount &&
+              channel.mentionCount === state.mentionCount &&
+              channel.notificationLevel === state.level &&
+              channel.showUnread === state.showUnread
+            ) return channel;
+            changed = true;
+            return {
+              ...channel,
+              unreadCount: state.unreadCount,
+              mentionCount: state.mentionCount,
+              notificationLevel: state.level,
+              showUnread: state.showUnread,
+            };
+          });
+          return changed ? next : current;
+        });
+      } finally {
+        syncingStates = false;
+      }
     }
     void syncChannelStates();
-    const timer = window.setInterval(() => void syncChannelStates(), 10_000);
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") void syncChannelStates();
+    }, 8_000);
     return () => {
       stopped = true;
       window.clearInterval(timer);
@@ -1630,39 +1830,46 @@ export function KuzensApp() {
   useEffect(() => {
     if (modal !== "directMessages" || !activeDirectConversationId) return;
     let stopped = false;
+    let syncingDirect = false;
     let lastMarkedMessageId = "";
     async function sync() {
-      const response = await apiFetch(
-        `/api/direct-messages?conversation=${encodeURIComponent(activeDirectConversationId)}`,
-      );
-      if (!response.ok || stopped) return;
-      const data = (await response.json()) as { messages?: DirectMessage[] };
-      const nextMessages = data.messages || [];
-      setDirectMessages(nextMessages);
-      const latestMessageId = nextMessages.at(-1)?.id || "empty";
-      if (latestMessageId !== lastMarkedMessageId) {
-        lastMarkedMessageId = latestMessageId;
-        await apiFetch("/api/direct-messages", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            action: "read",
-            conversationId: activeDirectConversationId,
-          }),
-        }).catch(() => undefined);
-        setDirectConversations((current) =>
-          current.map((conversation) =>
-            conversation.id === activeDirectConversationId
-              ? { ...conversation, unreadCount: 0 }
-            : conversation,
-          ),
+      if (syncingDirect || stopped) return;
+      syncingDirect = true;
+      try {
+        const response = await apiFetch(
+          `/api/direct-messages?conversation=${encodeURIComponent(activeDirectConversationId)}`,
         );
+        if (!response.ok || stopped) return;
+        const data = (await response.json()) as { messages?: DirectMessage[] };
+        const nextMessages = data.messages || [];
+        setDirectMessages((current) => recordsEqual(current, nextMessages) ? current : nextMessages);
+        const latestMessageId = nextMessages.at(-1)?.id || "empty";
+        if (latestMessageId !== lastMarkedMessageId) {
+          lastMarkedMessageId = latestMessageId;
+          await apiFetch("/api/direct-messages", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              action: "read",
+              conversationId: activeDirectConversationId,
+            }),
+          }).catch(() => undefined);
+          setDirectConversations((current) =>
+            current.map((conversation) =>
+              conversation.id === activeDirectConversationId
+                ? { ...conversation, unreadCount: 0 }
+              : conversation,
+            ),
+          );
+        }
+      } finally {
+        syncingDirect = false;
       }
     }
     void sync();
     const timer = window.setInterval(() => {
       if (document.visibilityState === "visible") void sync();
-    }, 4_000);
+    }, 2_500);
     return () => {
       stopped = true;
       window.clearInterval(timer);
@@ -1701,17 +1908,18 @@ export function KuzensApp() {
     let frame = 0;
     let lastUpdate = 0;
     const sample = (time: number) => {
-      if (time - lastUpdate > 110) {
+      if (time - lastUpdate > 160) {
         const next = new Set<string>();
         for (const item of analysers) {
           item.analyser.getByteFrequencyData(item.data);
           const average = item.data.reduce((sum, value) => sum + value, 0) / Math.max(1, item.data.length);
           if (average > 13) next.add(item.id);
           if (item.id === profile?.id) {
-            setMicrophoneLevel(Math.min(100, Math.max(0, Math.round((average - 3) * 4))));
+            const nextLevel = Math.min(100, Math.max(0, Math.round((average - 3) * 4)));
+            setMicrophoneLevel((current) => Math.abs(current - nextLevel) >= 3 ? nextLevel : current);
           }
         }
-        setSpeakingMembers(next);
+        setSpeakingMembers((current) => stringSetsEqual(current, next) ? current : next);
         lastUpdate = time;
       }
       frame = requestAnimationFrame(sample);
@@ -1721,7 +1929,7 @@ export function KuzensApp() {
       cancelAnimationFrame(frame);
       void context.close();
     };
-  }, [cameraEnabled, profile, remoteStreams, voiceConnected]);
+  }, [profile, remoteStreams, voiceConnected, voiceProcessingStatus.enhancedNoiseFilter]);
 
   useEffect(() => {
     if (!voiceConnected) return;
@@ -1865,6 +2073,8 @@ export function KuzensApp() {
           echoCancellation: saved.echoCancellation !== false,
           noiseSuppression: saved.noiseSuppression !== false,
           autoGainControl: saved.autoGainControl !== false,
+          noiseFilterStrength:
+            saved.noiseFilterStrength === "balanced" ? "balanced" : "strong",
         });
       } catch {
         setPreferences(defaultPreferences);
@@ -1878,6 +2088,14 @@ export function KuzensApp() {
     if (!preferencesReady.current) return;
     localStorage.setItem("kuzens-preferences", JSON.stringify(preferences));
   }, [preferences]);
+
+  useEffect(() => {
+    voiceBitrateRef.current = connectedVoiceBitrate;
+    for (const connection of peerConnections.current.values()) {
+      const sender = connection.getSenders().find((item) => item.track?.kind === "audio");
+      if (sender) void configureAudioSender(sender, connectedVoiceBitrate);
+    }
+  }, [connectedVoiceBitrate]);
 
   useEffect(() => {
     window.queueMicrotask(() => {
@@ -2127,6 +2345,9 @@ export function KuzensApp() {
     const connections = peerConnections.current;
     return () => {
       voiceStream.current?.getTracks().forEach((track) => track.stop());
+      const pipeline = voiceAudioPipeline.current;
+      voiceAudioPipeline.current = null;
+      void disposeVoiceAudioPipeline(pipeline);
       displayStream.current?.getTracks().forEach((track) => track.stop());
       connections.forEach((connection) => connection.close());
       connections.clear();
@@ -2212,7 +2433,13 @@ export function KuzensApp() {
     peerConnections.current.set(profileId, connection);
 
     for (const stream of [voiceStream.current, displayStream.current]) {
-      stream?.getTracks().forEach((track) => connection.addTrack(track, stream));
+      if (!stream) continue;
+      for (const track of stream.getTracks()) {
+        const sender = connection.addTrack(track, stream);
+        if (track.kind === "audio") {
+          await configureAudioSender(sender, voiceBitrateRef.current);
+        }
+      }
     }
     if (!voiceStream.current?.getAudioTracks().length) {
       connection.addTransceiver("audio", { direction: "recvonly" });
@@ -2286,12 +2513,7 @@ export function KuzensApp() {
       rtcChannelId.current = connectedVoiceChannelId;
     }
     const participantIds = new Set(
-      members
-        .filter(
-          (member) =>
-            member.voiceChannelId === connectedVoiceChannelId && member.id !== profile.id,
-        )
-        .map((member) => member.id),
+      connectedVoiceParticipantKey ? connectedVoiceParticipantKey.split(",") : [],
     );
     peerConnections.current.forEach((_, profileId) => {
       if (!participantIds.has(profileId)) closePeer(profileId);
@@ -2302,31 +2524,38 @@ export function KuzensApp() {
     }
 
     let stopped = false;
+    let polling = false;
     async function pollSignals() {
-      const query = new URLSearchParams({
-        server: activeServerId,
-        channel: connectedVoiceChannelId!,
-        after: rtcSyncAt.current,
-      });
-      const response = await apiFetch(`/api/rtc?${query.toString()}`);
-      if (!response.ok || stopped) return;
-      const data = (await response.json()) as {
-        signals?: RtcSignal[];
-        syncedAt?: string;
-      };
-      for (const signal of data.signals || []) {
-        if (stopped) break;
-        await applyRtcSignal(signal).catch(() => closePeer(signal.senderProfileId));
+      if (polling || stopped) return;
+      polling = true;
+      try {
+        const query = new URLSearchParams({
+          server: activeServerId,
+          channel: connectedVoiceChannelId!,
+          after: rtcSyncAt.current,
+        });
+        const response = await apiFetch(`/api/rtc?${query.toString()}`);
+        if (!response.ok || stopped) return;
+        const data = (await response.json()) as {
+          signals?: RtcSignal[];
+          syncedAt?: string;
+        };
+        for (const signal of data.signals || []) {
+          if (stopped) break;
+          await applyRtcSignal(signal).catch(() => closePeer(signal.senderProfileId));
+        }
+        if (data.syncedAt) rtcSyncAt.current = data.syncedAt;
+      } finally {
+        polling = false;
       }
-      if (data.syncedAt) rtcSyncAt.current = data.syncedAt;
     }
     void pollSignals();
-    const timer = window.setInterval(() => void pollSignals(), 1_200);
+    const timer = window.setInterval(() => void pollSignals(), 650);
     return () => {
       stopped = true;
       window.clearInterval(timer);
     };
-  }, [activeServerId, applyRtcSignal, closePeer, connectedVoiceChannelId, getOrCreatePeer, members, profile, voiceConnected]);
+  }, [activeServerId, applyRtcSignal, closePeer, connectedVoiceChannelId, connectedVoiceParticipantKey, getOrCreatePeer, profile, voiceConnected]);
 
   async function leaveVoice(showToast = true) {
     await apiFetch("/api/presence", {
@@ -2340,6 +2569,9 @@ export function KuzensApp() {
     }).catch(() => undefined);
     voiceStream.current?.getTracks().forEach((track) => track.stop());
     voiceStream.current = null;
+    const pipeline = voiceAudioPipeline.current;
+    voiceAudioPipeline.current = null;
+    void disposeVoiceAudioPipeline(pipeline);
     displayStream.current?.getTracks().forEach((track) => track.stop());
     displayStream.current = null;
     if (previewVideo.current) previewVideo.current.srcObject = null;
@@ -2355,18 +2587,29 @@ export function KuzensApp() {
   }
 
   async function replaceMicrophoneInput(nextPreferences: AppPreferences) {
-    const replacement = await navigator.mediaDevices.getUserMedia({
-      audio: audioConstraintsFor(nextPreferences),
-    });
-    const nextTrack = replacement.getAudioTracks()[0];
-    if (!nextTrack) throw new Error("Mikrofon ses yolu oluşturulamadı.");
+    const replacement = await prepareVoiceInput(nextPreferences);
+    const nextTrack = replacement.stream.getAudioTracks()[0];
+    if (!nextTrack) {
+      await disposeVoiceAudioPipeline(replacement.pipeline);
+      throw new Error("Mikrofon ses yolu oluşturulamadı.");
+    }
     nextTrack.enabled = nextPreferences.pushToTalk ? pttPressed : !muted;
-    await Promise.all(
-      Array.from(peerConnections.current.values()).map(async (connection) => {
-        const sender = connection.getSenders().find((item) => item.track?.kind === "audio");
-        if (sender) await sender.replaceTrack(nextTrack);
-      }),
-    );
+    try {
+      await Promise.all(
+        Array.from(peerConnections.current.values()).map(async (connection) => {
+          const sender = connection.getSenders().find((item) => item.track?.kind === "audio");
+          if (sender) {
+            await sender.replaceTrack(nextTrack);
+            await configureAudioSender(sender, voiceBitrateRef.current);
+          }
+        }),
+      );
+    } catch (error) {
+      replacement.stream.getTracks().forEach((track) => track.stop());
+      await disposeVoiceAudioPipeline(replacement.pipeline);
+      throw error;
+    }
+    const previousPipeline = voiceAudioPipeline.current;
     if (voiceStream.current) {
       for (const track of voiceStream.current.getAudioTracks()) {
         voiceStream.current.removeTrack(track);
@@ -2374,9 +2617,11 @@ export function KuzensApp() {
       }
       voiceStream.current.addTrack(nextTrack);
     } else {
-      voiceStream.current = replacement;
+      voiceStream.current = replacement.stream;
     }
-    setVoiceProcessingStatus(processingStatusFor(nextTrack));
+    voiceAudioPipeline.current = replacement.pipeline;
+    await disposeVoiceAudioPipeline(previousPipeline);
+    setVoiceProcessingStatus(replacement.status);
   }
 
   async function toggleCleanVoice() {
@@ -2395,7 +2640,7 @@ export function KuzensApp() {
       }
       setToast({
         text: enabled
-          ? "Temiz Ses açıldı: gürültü ve yankı engelleme etkin."
+          ? "Temiz Ses açıldı: gürültü, yankı ve Kuzens güçlü filtresi etkin."
           : "Temiz Ses kapatıldı.",
         tone: "success",
       });
@@ -2421,17 +2666,12 @@ export function KuzensApp() {
         if (previewVideo.current) previewVideo.current.srcObject = null;
       }
       let stream = voiceStream.current;
+      let preparedInput: PreparedVoiceInput | null = null;
       if (!canSpeak) {
-        stream?.getTracks().forEach((track) => track.stop());
         stream = new MediaStream();
-        voiceStream.current = stream;
       } else if (!stream || !stream.getAudioTracks().length) {
-        stream?.getTracks().forEach((track) => track.stop());
-        stream = await navigator.mediaDevices.getUserMedia({
-          audio: audioConstraintsFor(preferences),
-        });
-        voiceStream.current = stream;
-        setVoiceProcessingStatus(processingStatusFor(stream.getAudioTracks()[0]));
+        preparedInput = await prepareVoiceInput(preferences);
+        stream = preparedInput.stream;
       }
       const presence = await apiFetch("/api/presence", {
         method: "POST",
@@ -2443,12 +2683,22 @@ export function KuzensApp() {
         }),
       });
       if (!presence.ok) {
-        if (!voiceConnected) {
-          stream.getTracks().forEach((track) => track.stop());
-          voiceStream.current = null;
+        if (preparedInput) {
+          preparedInput.stream.getTracks().forEach((track) => track.stop());
+          await disposeVoiceAudioPipeline(preparedInput.pipeline);
         }
         throw new Error(await responseError(presence, "Ses odasına bağlanılamadı."));
       }
+      if (stream !== voiceStream.current) {
+        voiceStream.current?.getTracks().forEach((track) => track.stop());
+        const previousPipeline = voiceAudioPipeline.current;
+        voiceStream.current = stream;
+        voiceAudioPipeline.current = preparedInput?.pipeline || null;
+        await disposeVoiceAudioPipeline(previousPipeline);
+      }
+      setVoiceProcessingStatus(
+        canSpeak && preparedInput ? preparedInput.status : canSpeak ? voiceProcessingStatus : processingStatusFor(),
+      );
       peerConnections.current.forEach((_, profileId) => closePeer(profileId));
       rtcSyncAt.current = new Date(Date.now() - 30_000).toISOString();
       rtcChannelId.current = channel.id;
@@ -5772,6 +6022,7 @@ export function KuzensApp() {
                 <span className={voiceProcessingStatus.noiseSuppression ? "active" : ""}>Gürültü engelleme</span>
                 <span className={voiceProcessingStatus.echoCancellation ? "active" : ""}>Yankı engelleme</span>
                 <span className={voiceProcessingStatus.voiceIsolation ? "active" : ""}>Ses yalıtımı</span>
+                <span className={voiceProcessingStatus.enhancedNoiseFilter ? "active" : ""}>Kuzens güçlü filtre</span>
               </div>
               <label title="Mikrofon giriş seviyesi">
                 <small>MİKROFON</small>
@@ -7860,6 +8111,22 @@ export function KuzensApp() {
                   ))}
                 </select>
               </label>
+              <label className="settings-field">
+                <span>Ek gürültü filtresi</span>
+                <select
+                  value={preferences.noiseFilterStrength}
+                  onChange={(event) =>
+                    setPreferences((current) => ({
+                      ...current,
+                      noiseFilterStrength: event.target.value as "balanced" | "strong",
+                    }))
+                  }
+                >
+                  <option value="balanced">Dengeli · doğal ses</option>
+                  <option value="strong">Güçlü · fan ve klavye için</option>
+                </select>
+                <small>Güçlü mod, tarayıcı filtresine Kuzens gürültü kapısı ve konuşma kompresörü ekler.</small>
+              </label>
               <div className="preference-toggles">
                 <label>
                   <span><strong>Bas-konuş</strong><small>Boşluk tuşuna basılı tuttuğunda mikrofon açılır.</small></span>
@@ -7909,6 +8176,7 @@ export function KuzensApp() {
               <div className="voice-processing-summary">
                 <span className={preferences.noiseSuppression ? "active" : ""}>✦ Gürültü filtresi {preferences.noiseSuppression ? "açık" : "kapalı"}</span>
                 <span className={preferences.echoCancellation ? "active" : ""}>↻ Yankı kalkanı {preferences.echoCancellation ? "açık" : "kapalı"}</span>
+                <span className={preferences.noiseSuppression ? "active" : ""}>◈ Ek filtre {preferences.noiseFilterStrength === "strong" ? "güçlü" : "dengeli"}</span>
                 {voiceConnected && <small>Değişiklikler kaydedildiğinde aktif görüşmeye anında uygulanır.</small>}
               </div>
               {preferences.pushToTalk && (

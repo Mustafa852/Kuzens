@@ -93,6 +93,10 @@ const [accountRoute, channelPermissionsRoute] = await Promise.all([
   readFile(new URL("../app/api/channel-permissions/route.ts", import.meta.url), "utf8"),
 ]);
 const desktopMain = await readFile(new URL("../desktop/main.cjs", import.meta.url), "utf8");
+const noiseGateSource = await readFile(
+  new URL("../public/audio/kuzens-noise-gate.js", import.meta.url),
+  "utf8",
+);
 
 test("keeps the application fixed to the viewport", () => {
   assert.match(
@@ -329,6 +333,14 @@ test("supports advanced search, accessibility controls, and push-to-talk", () =>
   assert.match(appSource, /preferences\.pushToTalk/);
   assert.match(appSource, /audioConstraintsFor/);
   assert.match(appSource, /voiceIsolation/);
+  assert.match(appSource, /prepareVoiceInput/);
+  assert.match(appSource, /noiseFilterStrength/);
+  assert.match(appSource, /configureAudioSender/);
+  assert.match(appSource, /latency = \{ ideal: 0\.01 \}/);
+  assert.match(appSource, /setInterval\(\(\) => void pollSignals\(\), 650\)/);
+  assert.match(appSource, /if \(polling \|\| stopped\) return/);
+  assert.match(noiseGateSource, /registerProcessor\("kuzens-noise-gate"/);
+  assert.match(noiseGateSource, /this\.holdFrames = 24/);
   assert.match(appSource, /replaceMicrophoneInput/);
   assert.match(appSource, /Temiz Ses/);
   assert.match(appSource, /microphoneLevel/);
@@ -340,6 +352,7 @@ test("supports advanced search, accessibility controls, and push-to-talk", () =>
   assert.match(appStyles, /\.app-shell\.high-contrast/);
   assert.match(appStyles, /\.app-shell\.reduce-motion/);
   assert.match(appStyles, /:focus-visible/);
+  assert.match(appStyles, /content-visibility:\s*auto/);
 });
 
 test("separates channel notifications from unread indicators", () => {
