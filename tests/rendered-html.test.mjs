@@ -92,6 +92,7 @@ const [accountRoute, channelPermissionsRoute] = await Promise.all([
   readFile(new URL("../app/api/account/route.ts", import.meta.url), "utf8"),
   readFile(new URL("../app/api/channel-permissions/route.ts", import.meta.url), "utf8"),
 ]);
+const desktopMain = await readFile(new URL("../desktop/main.cjs", import.meta.url), "utf8");
 
 test("keeps the application fixed to the viewport", () => {
   assert.match(
@@ -190,6 +191,17 @@ test("keeps user content inert and realtime signals targeted", () => {
   assert.match(rtcRoute, /Kendine sinyal gönderemezsin/);
   assert.match(rtcRoute, /Yalnızca aynı ses odasındaki üyeler/);
   assert.doesNotMatch(rtcRoute, /recipientProfileId:\s*null/);
+});
+
+test("keeps generated links and codes copyable when clipboard permission is denied", () => {
+  assert.match(appSource, /async function writeClipboardText/);
+  assert.match(appSource, /document\.execCommand\("copy"\)/);
+  assert.match(appSource, /Pano izni kapalı/);
+  assert.match(appSource, /className="modal-card copy-fallback-modal"/);
+  assert.match(appSource, /code: data\.invite\?\.code/);
+  assert.equal((appSource.match(/navigator\.clipboard\.writeText/g) || []).length, 1);
+  assert.match(desktopMain, /"clipboard-sanitized-write"/);
+  assert.match(nextConfig, /clipboard-write=\(self\)/);
 });
 
 test("enforces scoped ownership, role hierarchy, and bans", () => {

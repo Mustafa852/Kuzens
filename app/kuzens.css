@@ -8563,6 +8563,106 @@
 @keyframes splash-camera { from { transform: scale(1.045); filter: brightness(.65); } to { transform: scale(1); filter: brightness(1); } }
 @keyframes splash-load { from { transform: scaleX(0); } to { transform: scaleX(1); } }
 
+.copy-backdrop {
+  z-index: 140;
+}
+
+.copy-fallback-modal {
+  width: min(560px, 100%);
+  padding: 30px;
+  border-color: rgba(107, 231, 209, 0.22);
+  background:
+    radial-gradient(circle at 88% 8%, rgba(83, 224, 201, 0.12), transparent 31%),
+    radial-gradient(circle at 12% 100%, rgba(139, 115, 255, 0.14), transparent 35%),
+    #151721;
+}
+
+.copy-fallback-modal > .eyebrow {
+  color: #69e0cd;
+}
+
+.copy-invite-code {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 14px;
+  padding: 13px 15px;
+  border: 1px solid rgba(105, 224, 205, 0.18);
+  border-radius: 12px;
+  background: rgba(105, 224, 205, 0.06);
+}
+
+.copy-invite-code span,
+.copy-fallback-field > span {
+  color: #8c93a7;
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 0.12em;
+}
+
+.copy-invite-code strong {
+  color: #effffb;
+  font-family: var(--font-mono), ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 21px;
+  letter-spacing: 0.12em;
+}
+
+.copy-fallback-field {
+  display: grid;
+  gap: 7px;
+}
+
+.copy-fallback-field textarea {
+  width: 100%;
+  min-height: 86px;
+  resize: vertical;
+  padding: 13px 14px;
+  border: 1px solid rgba(139, 115, 255, 0.24);
+  border-radius: 11px;
+  outline: none;
+  background: #0c0e15;
+  color: #e8eaf4;
+  font: 600 12px/1.55 var(--font-mono), ui-monospace, SFMono-Regular, Consolas, monospace;
+  overflow-wrap: anywhere;
+}
+
+.copy-fallback-field textarea:focus {
+  border-color: #8f78ff;
+  box-shadow: 0 0 0 3px rgba(143, 120, 255, 0.12);
+}
+
+.copy-fallback-help {
+  display: block;
+  margin-top: 8px;
+  color: #747b8e;
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.copy-fallback-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 20px;
+}
+
+.copy-fallback-actions button {
+  min-height: 40px;
+  padding: 0 16px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.045);
+  color: #b9becd;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.copy-fallback-actions button.primary {
+  border-color: transparent;
+  background: linear-gradient(135deg, #967bff, #7351e6);
+  color: #fff;
+  box-shadow: 0 10px 28px rgba(115, 81, 230, 0.25);
+}
+
 @media (max-width: 1280px) {
   .app-shell-v3 { grid-template-columns: 68px 288px minmax(420px, 1fr); }
 }
@@ -8603,6 +8703,9 @@
   .zero-state-content > p { font-size: 11px; }
   .zero-invite-form > div { grid-template-columns: 1fr; }
   .zero-invite-form button { min-height: 40px; }
+  .copy-fallback-modal { padding: 24px 18px 18px; }
+  .copy-invite-code strong { font-size: 16px; }
+  .copy-fallback-actions { display: grid; grid-template-columns: 1fr 1fr; }
 }
 
 @media (prefers-reduced-motion: reduce) {

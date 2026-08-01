@@ -138,6 +138,14 @@ type PollData = {
 
 type Toast = { text: string; tone?: "success" | "danger" };
 
+type CopyFallback = {
+  title: string;
+  description: string;
+  value: string;
+  label: string;
+  code?: string;
+};
+
 type Profile = {
   id: string;
   displayName: string;
@@ -539,6 +547,38 @@ function apiFetch(input: RequestInfo | URL, init: RequestInit = {}) {
 async function responseError(response: Response, fallback: string) {
   const data = (await response.json().catch(() => ({}))) as { error?: string };
   return data.error || fallback;
+}
+
+async function writeClipboardText(value: string) {
+  if (navigator.clipboard?.writeText && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(value);
+      return true;
+    } catch {
+      // Some browsers and desktop shells deny the async clipboard permission.
+      // Keep going so the user can still copy through the local selection fallback.
+    }
+  }
+
+  const field = document.createElement("textarea");
+  field.value = value;
+  field.readOnly = true;
+  field.setAttribute("aria-hidden", "true");
+  field.style.position = "fixed";
+  field.style.inset = "-1000px auto auto -1000px";
+  field.style.opacity = "0";
+  document.body.appendChild(field);
+  field.focus({ preventScroll: true });
+  field.select();
+  field.setSelectionRange(0, value.length);
+
+  try {
+    return document.execCommand("copy");
+  } catch {
+    return false;
+  } finally {
+    field.remove();
+  }
 }
 
 function mergeMessages(current: ChatMessage[], incoming: ChatMessage[]) {
@@ -984,6 +1024,7 @@ export function KuzensApp() {
   const [deafened, setDeafened] = useState(false);
   const [sharing, setSharing] = useState(false);
   const [toast, setToast] = useState<Toast | null>(null);
+  const [copyFallback, setCopyFallback] = useState<CopyFallback | null>(null);
   const [modal, setModal] = useState<
     "channel" | "category" | "channelSettings" | "channelNotifications" | "roles" | "server" | "serverSettings" | "friends" | "account" | "profile" | "memberProfile" | "notifications" | "aura" | "preferences" | "directMessages" | "groupDirect" | "auditLog" | "events" | "automod" | "bookmarks" | "poll" | "thread" | "guide" | "reports" | null
   >(null);
@@ -3024,13 +3065,35 @@ export function KuzensApp() {
     setToast({ text: message.pinned ? "Sabitleme kaldırıldı." : "Mesaj sabitlendi.", tone: "success" });
   }
 
+  async function copyText(
+    value: string,
+    successMessage: string,
+    fallback: Omit<CopyFallback, "value">,
+  ) {
+    const copied = await writeClipboardText(value);
+    if (copied) {
+      setCopyFallback(null);
+      setToast({ text: successMessage, tone: "success" });
+      return true;
+    }
+
+    setCopyFallback({ ...fallback, value });
+    setToast({
+      text: "Pano izni kapalı. İçerik hazır; açılan alandan elle kopyalayabilirsin.",
+    });
+    return false;
+  }
+
   async function copyMessageLink(message: ChatMessage) {
     const url = new URL(window.location.href);
     url.searchParams.set("sunucu", activeServerId);
     url.searchParams.set("kanal", message.channelId);
     url.hash = `mesaj-${message.id}`;
-    await navigator.clipboard.writeText(url.toString());
-    setToast({ text: "Mesaj bağlantısı kopyalandı.", tone: "success" });
+    await copyText(url.toString(), "Mesaj bağlantısı kopyalandı.", {
+      title: "Mesaj bağlantısı hazır",
+      description: "Bağlantıya dokunup Ctrl+C ile kopyalayabilirsin.",
+      label: "MESAJ BAĞLANTISI",
+    });
   }
 
   async function reportContent(targetType: "message" | "profile", targetId: string) {
@@ -4870,9 +4933,14 @@ export function KuzensApp() {
         body: JSON.stringify({ action: "create", serverId: activeServerId }),
       });
       if (!response.ok) throw new Error(await responseError(response, "Davet oluşturulamadı."));
-      const data = (await response.json()) as { url: string };
-      await navigator.clipboard.writeText(data.url);
-      setToast({ text: "Davet bağlantısı kopyalandı.", tone: "success" });
+      const data = (await response.json()) as { url: string; invite?: { code?: string } };
+      await copyText(data.url, "Davet bağlantısı kopyalandı.", {
+        title: "Davetin hazır",
+        description:
+          "Davet başarıyla oluşturuldu. Pano izni kapalıysa bağlantıyı veya kodu buradan elle kopyalayabilirsin.",
+        label: "DAVET BAĞLANTISI",
+        code: data.invite?.code,
+      });
     } catch (error) {
       setToast({
         text: error instanceof Error ? error.message : "Davet oluşturulamadı.",
@@ -4926,12 +4994,21 @@ export function KuzensApp() {
         code?: string;
       };
       if (!response.ok) throw new Error(data.error || "Aura işlemi tamamlanamadı.");
+      let completedMessage = successMessage;
       if (data.code) {
         setFreshAuraCode(data.code);
-        await navigator.clipboard.writeText(data.code).catch(() => undefined);
+        const copied = await copyText(data.code, "Aura kodu panoya kopyalandı.", {
+          title: "Aura kodun hazır",
+          description: "Koda dokunup Ctrl+C ile kopyalayabilir ve güvenle paylaşabilirsin.",
+          label: "AURA KODU",
+          code: data.code,
+        });
+        completedMessage = copied
+          ? `${successMessage} Kod panoya kopyalandı.`
+          : `${successMessage} Kodu açılan alandan elle kopyalayabilirsin.`;
       }
       await loadAura();
-      setToast({ text: successMessage, tone: "success" });
+      setToast({ text: completedMessage, tone: "success" });
       return true;
     } catch (error) {
       setToast({
@@ -4961,7 +5038,7 @@ export function KuzensApp() {
         durationDays: auraCodeDuration,
         maxUses: auraMaxUses,
       },
-      "Yeni Aura kodu üretildi ve panoya kopyalandı.",
+      "Yeni Aura kodu üretildi.",
     );
   }
 
@@ -7545,10 +7622,18 @@ export function KuzensApp() {
                   </form>
                   {freshAuraCode && (
                     <button
+                      type="button"
                       className="fresh-aura-code"
-                      onClick={() => void navigator.clipboard.writeText(freshAuraCode)}
+                      onClick={() =>
+                        void copyText(freshAuraCode, "Aura kodu panoya kopyalandı.", {
+                          title: "Aura kodun hazır",
+                          description: "Koda dokunup Ctrl+C ile kopyalayabilirsin.",
+                          label: "AURA KODU",
+                          code: freshAuraCode,
+                        })
+                      }
                     >
-                      <span>YENİ KOD · panoya kopyalandı</span>
+                      <span>YENİ KOD · kopyalamak için dokun</span>
                       <strong>{freshAuraCode}</strong>
                     </button>
                   )}
@@ -9076,6 +9161,73 @@ export function KuzensApp() {
         </div>
       )}
 
+      {copyFallback && (
+        <div className="modal-backdrop copy-backdrop" onMouseDown={() => setCopyFallback(null)}>
+          <section
+            className="modal-card copy-fallback-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="copy-fallback-title"
+            onMouseDown={(event) => event.stopPropagation()}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") setCopyFallback(null);
+            }}
+          >
+            <button
+              type="button"
+              className="modal-close"
+              onClick={() => setCopyFallback(null)}
+              aria-label="Kapat"
+            >
+              ×
+            </button>
+            <span className="eyebrow">KOPYALAMAYA HAZIR</span>
+            <h2 id="copy-fallback-title">{copyFallback.title}</h2>
+            <p>{copyFallback.description}</p>
+            {copyFallback.code && copyFallback.code !== copyFallback.value && (
+              <div className="copy-invite-code">
+                <span>DAVET KODU</span>
+                <strong>{copyFallback.code}</strong>
+              </div>
+            )}
+            <label className="copy-fallback-field">
+              <span>{copyFallback.label}</span>
+              <textarea
+                autoFocus
+                readOnly
+                rows={copyFallback.value.includes("\n") ? 5 : 3}
+                value={copyFallback.value}
+                onFocus={(event) => event.currentTarget.select()}
+                onClick={(event) => event.currentTarget.select()}
+                aria-label={copyFallback.label}
+              />
+            </label>
+            <small className="copy-fallback-help">
+              Alanı seçtikten sonra Ctrl+C kullanabilir veya aşağıdaki düğmeyle yeniden deneyebilirsin.
+            </small>
+            <div className="copy-fallback-actions">
+              <button type="button" onClick={() => setCopyFallback(null)}>Kapat</button>
+              <button
+                type="button"
+                className="primary"
+                onClick={async () => {
+                  if (await writeClipboardText(copyFallback.value)) {
+                    setCopyFallback(null);
+                    setToast({ text: "Panoya kopyalandı.", tone: "success" });
+                  } else {
+                    setToast({
+                      text: "Pano izni hâlâ kapalı. Alan seçili; Ctrl+C ile kopyalayabilirsin.",
+                    });
+                  }
+                }}
+              >
+                Tekrar kopyala
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+
       {contextMenu && (
         <div
           className="context-menu"
@@ -9132,7 +9284,15 @@ export function KuzensApp() {
                 </>
               )}
               <button onClick={() => void copyInvite()}><span>↗</span>Davet oluştur</button>
-              <button onClick={() => { void navigator.clipboard.writeText(`${window.location.origin}/?sunucu=${activeServerId}&kanal=${contextMenu.channel!.id}`); setToast({ text: "Kanal bağlantısı kopyalandı.", tone: "success" }); }}><span>⛓</span>Bağlantıyı kopyala</button>
+              <button onClick={() => void copyText(
+                `${window.location.origin}/?sunucu=${activeServerId}&kanal=${contextMenu.channel!.id}`,
+                "Kanal bağlantısı kopyalandı.",
+                {
+                  title: "Kanal bağlantısı hazır",
+                  description: "Bağlantıya dokunup Ctrl+C ile kopyalayabilirsin.",
+                  label: "KANAL BAĞLANTISI",
+                },
+              )}><span>⛓</span>Bağlantıyı kopyala</button>
               {canManageChannels && (
                 <>
                   <i />
@@ -9169,7 +9329,15 @@ export function KuzensApp() {
                 <button onClick={() => void editMessage(contextMenu.message!)}><span>✎</span>Mesajı düzenle</button>
               )}
               <i />
-              <button onClick={() => { void navigator.clipboard.writeText(contextMenu.message!.content); setToast({ text: "Mesaj metni kopyalandı.", tone: "success" }); }}><span>▣</span>Metni kopyala</button>
+              <button onClick={() => void copyText(
+                contextMenu.message!.content,
+                "Mesaj metni kopyalandı.",
+                {
+                  title: "Mesaj metni hazır",
+                  description: "Metne dokunup Ctrl+C ile kopyalayabilirsin.",
+                  label: "MESAJ METNİ",
+                },
+              )}><span>▣</span>Metni kopyala</button>
               <button onClick={() => void copyMessageLink(contextMenu.message!)}><span>⛓</span>Mesaj bağlantısını kopyala</button>
               <button onClick={() => void forwardMessage(contextMenu.message!)}><span>↗</span>Mesajı ilet</button>
               <button onClick={() => void saveBookmark(contextMenu.message!)}><span>☆</span>Sonra için kaydet</button>
