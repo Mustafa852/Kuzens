@@ -1,5 +1,5 @@
-import { eq, sql } from "drizzle-orm";
-import { invites, memberRoles, profiles, servers } from "@/db/schema";
+import { and, eq, gt, sql } from "drizzle-orm";
+import { invites, memberRoles, profiles, serverAutoModerationSettings, serverMembers, servers } from "@/db/schema";
 import { publicProfile } from "@/lib/profile-view";
 import { getUploads } from "@/lib/storage";
 import {
@@ -21,7 +21,7 @@ import {
 
 const LEGAL_VERSION = "2026-07-25.v1";
 
-function decodeAvatar(value: unknown) {
+function decodeProfileImage(value: unknown, maxBytes = 600_000, label = "Profil fotoğrafı") {
   if (typeof value !== "string") {
     throw new Error("Profil fotoğrafı verisi geçersiz.");
   }
@@ -30,8 +30,8 @@ function decodeAvatar(value: unknown) {
   );
   if (!match) throw new Error("Profil fotoğrafı WebP, PNG veya JPEG olmalı.");
   const binary = atob(match[2]);
-  if (binary.length < 32 || binary.length > 600_000) {
-    throw new Error("Profil fotoğrafı en fazla 600 KB olabilir.");
+  if (binary.length < 32 || binary.length > maxBytes) {
+    throw new Error(`${label} en fazla ${Math.round(maxBytes / 100_000) / 10} MB olabilir.`);
   }
   const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
   const isPng =
@@ -161,6 +161,20 @@ export async function POST(request: Request) {
       ) {
         return apiJson({ error: "Davet geçersiz, süresi dolmuş veya kullanım sınırına ulaşmış." }, { status: 403 });
       }
+      const [autoMod] = await db
+        .select()
+        .from(serverAutoModerationSettings)
+        .where(eq(serverAutoModerationSettings.serverId, invite.serverId))
+        .limit(1);
+      if (autoMod?.enabled && autoMod.raidJoinLimit > 0) {
+        const recentJoins = await db
+          .select({ id: serverMembers.id })
+          .from(serverMembers)
+          .where(and(eq(serverMembers.serverId, invite.serverId), gt(serverMembers.joinedAt, new Date(Date.now() - 60_000).toISOString())));
+        if (recentJoins.length >= autoMod.raidJoinLimit) {
+          return apiJson({ error: "Toplu katılım koruması etkin. Birkaç dakika sonra tekrar dene." }, { status: 429 });
+        }
+      }
     }
 
     const now = new Date().toISOString();
@@ -226,6 +240,11 @@ export async function PATCH(request: Request) {
       presenceStatus?: "online" | "idle" | "dnd" | "invisible";
       avatarDataUrl?: string;
       removeAvatar?: boolean;
+      bannerDataUrl?: string;
+      removeBanner?: boolean;
+      profileColor?: string;
+      statusExpiresAt?: string | null;
+      allowFriendRequests?: boolean;
     }>(request, 900_000);
     const existing = await findProfile(identity);
     if (!existing) {
@@ -244,6 +263,17 @@ export async function PATCH(request: Request) {
     }
     const bio = cleanText(payload.bio ?? "", { min: 0, max: 190, multiline: true });
     const customStatus = cleanText(payload.customStatus ?? "", { min: 0, max: 80 });
+    const profileColor = /^#[0-9a-f]{6}$/i.test(payload.profileColor || "")
+      ? payload.profileColor!.toLocaleLowerCase("en-US")
+      : existing.profileColor || "#8b5cf6";
+    let statusExpiresAt: string | null = null;
+    if (payload.statusExpiresAt) {
+      const statusDate = new Date(payload.statusExpiresAt);
+      if (Number.isNaN(statusDate.getTime()) || statusDate.getTime() <= Date.now()) {
+        return apiJson({ error: "Durum bitiş zamanı gelecekte olmalı." }, { status: 400 });
+      }
+      statusExpiresAt = statusDate.toISOString();
+    }
     const presenceStatus = ["online", "idle", "dnd", "invisible"].includes(
       payload.presenceStatus || "",
     )
@@ -270,9 +300,9 @@ export async function PATCH(request: Request) {
       avatarKey = null;
     }
     if (payload.avatarDataUrl) {
-      let decoded: ReturnType<typeof decodeAvatar>;
+      let decoded: ReturnType<typeof decodeProfileImage>;
       try {
-        decoded = decodeAvatar(payload.avatarDataUrl);
+        decoded = decodeProfileImage(payload.avatarDataUrl);
       } catch (error) {
         return apiJson(
           {
@@ -299,6 +329,34 @@ export async function PATCH(request: Request) {
         customMetadata: { ownerProfileId: existing.id },
       });
     }
+    let bannerKey = existing.bannerKey;
+    const previousBannerKey = existing.bannerKey;
+    if (payload.removeBanner === true) bannerKey = null;
+    if (payload.bannerDataUrl) {
+      let decoded: ReturnType<typeof decodeProfileImage>;
+      try {
+        decoded = decodeProfileImage(payload.bannerDataUrl, 1_500_000, "Profil kapağı");
+      } catch (error) {
+        return apiJson(
+          { error: error instanceof Error ? error.message : "Profil kapağı işlenemedi." },
+          { status: 400 },
+        );
+      }
+      const extension =
+        decoded.contentType === "image/png"
+          ? "png"
+          : decoded.contentType === "image/jpeg"
+            ? "jpg"
+            : "webp";
+      bannerKey = `banners/${existing.id}/${crypto.randomUUID()}.${extension}`;
+      await getUploads().put(bannerKey, decoded.bytes, {
+        httpMetadata: {
+          contentType: decoded.contentType,
+          cacheControl: "private, max-age=31536000, immutable",
+        },
+        customMetadata: { ownerProfileId: existing.id },
+      });
+    }
     await db
       .update(profiles)
       .set({
@@ -308,10 +366,17 @@ export async function PATCH(request: Request) {
         customStatus,
         presenceStatus,
         avatarKey,
+        bannerKey,
+        profileColor,
+        statusExpiresAt,
+        allowFriendRequests: payload.allowFriendRequests ?? existing.allowFriendRequests,
       })
       .where(eq(profiles.id, existing.id));
     if (previousAvatarKey && previousAvatarKey !== avatarKey) {
       await getUploads().delete(previousAvatarKey).catch(() => undefined);
+    }
+    if (previousBannerKey && previousBannerKey !== bannerKey) {
+      await getUploads().delete(previousBannerKey).catch(() => undefined);
     }
     return apiJson({
       profile: publicProfile({
@@ -322,6 +387,10 @@ export async function PATCH(request: Request) {
         customStatus,
         presenceStatus,
         avatarKey,
+        bannerKey,
+        profileColor,
+        statusExpiresAt,
+        allowFriendRequests: payload.allowFriendRequests ?? existing.allowFriendRequests,
       }),
     });
   } catch (error) {

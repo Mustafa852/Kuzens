@@ -15,6 +15,9 @@ export type AutoModSettings = {
   blockInviteLinks: boolean;
   blockDuplicateMessages: boolean;
   maxMentions: number;
+  blockedDomains: string;
+  maxMessagesPerMinute: number;
+  raidJoinLimit: number;
   exemptChannelIds: string[];
 };
 
@@ -24,6 +27,9 @@ export const defaultAutoModSettings: AutoModSettings = {
   blockInviteLinks: true,
   blockDuplicateMessages: true,
   maxMentions: 8,
+  blockedDomains: "",
+  maxMessagesPerMinute: 12,
+  raidJoinLimit: 10,
   exemptChannelIds: [],
 };
 
@@ -49,6 +55,9 @@ export async function readAutoModSettings(db: Database, serverId: string) {
     blockInviteLinks: row.blockInviteLinks,
     blockDuplicateMessages: row.blockDuplicateMessages,
     maxMentions: row.maxMentions,
+    blockedDomains: row.blockedDomains,
+    maxMessagesPerMinute: row.maxMessagesPerMinute,
+    raidJoinLimit: row.raidJoinLimit,
     exemptChannelIds,
   } satisfies AutoModSettings;
 }
@@ -84,6 +93,11 @@ export async function checkAutoModeration({
   if (!settings.enabled || settings.exemptChannelIds.includes(channelId)) return null;
 
   const normalized = normalize(content);
+  const blockedDomains = settings.blockedDomains
+    .split(/[\n,]/)
+    .map((domain) => domain.trim().toLocaleLowerCase("en-US").replace(/^www\./, ""))
+    .filter(Boolean)
+    .slice(0, 100);
   const mentionCount = Array.from(
     content.matchAll(/@(?:everyone|here|[a-z0-9_]{3,24})\b/gi),
   ).length;
@@ -97,6 +111,14 @@ export async function checkAutoModeration({
     )
   ) {
     reason = "external-invite";
+  } else if (
+    blockedDomains.some((domain) =>
+      Array.from(content.matchAll(/https?:\/\/([^/\s]+)/gi)).some(
+        (match) => match[1].toLocaleLowerCase("en-US").replace(/^www\./, "") === domain || match[1].toLocaleLowerCase("en-US").endsWith(`.${domain}`),
+      ),
+    )
+  ) {
+    reason = "blocked-domain";
   } else {
     const terms = settings.blockedTerms
       .split(/[\n,]/)
@@ -127,6 +149,19 @@ export async function checkAutoModeration({
     if (duplicates >= 2) reason = "duplicate-spam";
   }
 
+  if (!reason && !editing && settings.maxMessagesPerMinute > 0) {
+    const recent = await db
+      .select({ createdAt: messages.createdAt })
+      .from(messages)
+      .where(and(eq(messages.channelId, channelId), eq(messages.authorProfileId, profile.id)))
+      .orderBy(desc(messages.createdAt))
+      .limit(settings.maxMessagesPerMinute + 1);
+    const sentLastMinute = recent.filter(
+      (message) => new Date(message.createdAt).getTime() >= Date.now() - 60_000,
+    ).length;
+    if (sentLastMinute >= settings.maxMessagesPerMinute) reason = "flood-limit";
+  }
+
   if (reason) {
     await writeAudit(profile.id, "automod.block", channelId, reason, serverId);
   }
@@ -142,6 +177,12 @@ export function autoModError(reason: string) {
   }
   if (reason === "custom-keyword") {
     return "Mesaj, topluluğun AutoMod kuralına takıldı.";
+  }
+  if (reason === "blocked-domain") {
+    return "Bu bağlantı topluluğun engellenen alan adı listesinde.";
+  }
+  if (reason === "flood-limit") {
+    return "Çok hızlı mesaj gönderiyorsun. Bir dakika bekleyip tekrar dene.";
   }
   return "Aynı mesajı kısa sürede tekrar göndermeyi bırakıp biraz bekle.";
 }

@@ -99,6 +99,9 @@ export async function POST(request: Request) {
       if (!target || target.id === profile.id) {
         return apiJson({ error: "Kullanıcı bulunamadı." }, { status: 404 });
       }
+      if (!target.allowFriendRequests) {
+        return apiJson({ error: "Bu kullanıcı yeni arkadaşlık isteklerini kapatmış." }, { status: 403 });
+      }
       const id = relationshipId(profile.id, target.id);
       const [existing] = await db
         .select()

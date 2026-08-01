@@ -2,6 +2,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import { getDb } from "@/db";
 import {
   auditLogs,
+  channelMemberPermissionOverwrites,
   channelPermissionOverwrites,
   channels,
   memberRoles,
@@ -186,15 +187,26 @@ export async function channelPermissionsFor(
       ...assignments.map((assignment) => assignment.roleId),
     ]),
   );
-  const overwrites = await db
-    .select()
-    .from(channelPermissionOverwrites)
-    .where(
-      and(
-        eq(channelPermissionOverwrites.channelId, channelId),
-        inArray(channelPermissionOverwrites.roleId, roleIds),
+  const [overwrites, memberOverwrites] = await Promise.all([
+    db
+      .select()
+      .from(channelPermissionOverwrites)
+      .where(
+        and(
+          eq(channelPermissionOverwrites.channelId, channelId),
+          inArray(channelPermissionOverwrites.roleId, roleIds),
+        ),
       ),
-    );
+    db
+      .select()
+      .from(channelMemberPermissionOverwrites)
+      .where(
+        and(
+          eq(channelMemberPermissionOverwrites.channelId, channelId),
+          eq(channelMemberPermissionOverwrites.profileId, profile.id),
+        ),
+      ),
+  ]);
   const denied = overwrites.reduce(
     (permissions, overwrite) => permissions | overwrite.denyPermissions,
     0,
@@ -203,7 +215,16 @@ export async function channelPermissionsFor(
     (permissions, overwrite) => permissions | overwrite.allowPermissions,
     0,
   );
-  return (basePermissions & ~denied) | allowed;
+  const roleResolved = (basePermissions & ~denied) | allowed;
+  const memberDenied = memberOverwrites.reduce(
+    (permissions, overwrite) => permissions | overwrite.denyPermissions,
+    0,
+  );
+  const memberAllowed = memberOverwrites.reduce(
+    (permissions, overwrite) => permissions | overwrite.allowPermissions,
+    0,
+  );
+  return (roleResolved & ~memberDenied) | memberAllowed;
 }
 
 export async function requireChannelPermission(

@@ -24,7 +24,7 @@ import {
   readJson,
   requireIdentity,
 } from "@/lib/security";
-import { avatarUrlFor } from "@/lib/profile-view";
+import { avatarUrlFor, bannerUrlFor } from "@/lib/profile-view";
 
 export async function GET(request: Request) {
   try {
@@ -79,16 +79,25 @@ export async function GET(request: Request) {
         const role = memberRoleRows[0];
         return {
           id: profile.id,
-          name: profile.displayName,
+          name: membership?.nickname || profile.displayName,
+          displayName: profile.displayName,
           tag: `@${profile.username}`,
           online,
           lastSeenAt: membership?.lastSeenAt ?? null,
           voiceChannelId: membership?.voiceChannelId ?? null,
           sharing: membership?.sharing ?? false,
-          customStatus: profile.customStatus,
+          customStatus:
+            profile.statusExpiresAt && profile.statusExpiresAt <= new Date().toISOString()
+              ? ""
+              : profile.customStatus,
           presenceStatus: online ? profile.presenceStatus : "offline",
           bio: profile.bio,
           avatarUrl: avatarUrlFor(profile.id, profile.avatarKey),
+          bannerUrl: bannerUrlFor(profile.id, profile.bannerKey),
+          profileColor: profile.profileColor,
+          timeoutUntil: membership?.timeoutUntil ?? null,
+          serverMuted: membership?.serverMuted ?? false,
+          serverDeafened: membership?.serverDeafened ?? false,
           role: role ? { id: role.id, name: role.name, color: role.color } : null,
           roles: memberRoleRows.map((item) => ({
             id: item.id,
@@ -136,17 +145,20 @@ export async function POST(request: Request) {
     const payload = await readJson<{
       serverId?: string;
       profileId?: string;
-      action?: "kick" | "ban" | "unban";
+      action?: "kick" | "ban" | "unban" | "timeout" | "nickname" | "serverMute" | "serverDeafen" | "voiceDisconnect";
       reason?: string;
+      durationMinutes?: number;
+      nickname?: string;
+      enabled?: boolean;
     }>(request, 4_096);
     const serverId = cleanText(payload.serverId || DEFAULT_SERVER_ID, { max: 80 });
     const targetProfileId = cleanText(payload.profileId, { max: 80 });
     const { db, profile } = await requireMember(identity, serverId);
-    if (targetProfileId === profile.id) {
+    if (targetProfileId === profile.id && payload.action !== "nickname") {
       return apiJson({ error: "Kendine moderasyon işlemi uygulayamazsın." }, { status: 400 });
     }
     await enforceRateLimit(request, "member-moderation", identity.email, 20, 60 * 60_000);
-    if (!["kick", "ban", "unban"].includes(payload.action || "")) {
+    if (!["kick", "ban", "unban", "timeout", "nickname", "serverMute", "serverDeafen", "voiceDisconnect"].includes(payload.action || "")) {
       return apiJson({ error: "Geçersiz moderasyon işlemi." }, { status: 400 });
     }
     const [[server], [target], membershipRows, assignmentRows, roleRows] = await Promise.all([
@@ -187,7 +199,7 @@ export async function POST(request: Request) {
       ].filter((position): position is number => typeof position === "number");
       return positions.length ? Math.min(...positions) : Number.MAX_SAFE_INTEGER;
     };
-    if (!actorIsOwner && rolePosition(target) <= rolePosition(profile)) {
+    if (target.id !== profile.id && !actorIsOwner && rolePosition(target) <= rolePosition(profile)) {
       return apiJson({ error: "Eşit veya üst roldeki bir üyeye işlem uygulayamazsın." }, { status: 403 });
     }
 
@@ -203,6 +215,41 @@ export async function POST(request: Request) {
         );
       await writeAudit(profile.id, "member.unban", targetProfileId, undefined, serverId);
       return apiJson({ ok: true });
+    }
+
+    if (payload.action === "nickname") {
+      if (targetProfileId !== profile.id) {
+        await requirePermission(profile, PERMISSIONS.manageRoles, serverId);
+      }
+      const nickname = payload.nickname
+        ? cleanText(payload.nickname, { min: 1, max: 32 })
+        : null;
+      await db
+        .update(serverMembers)
+        .set({ nickname })
+        .where(and(eq(serverMembers.serverId, serverId), eq(serverMembers.profileId, targetProfileId)));
+      await writeAudit(profile.id, "member.nickname", targetProfileId, nickname || "temizlendi", serverId);
+      return apiJson({ ok: true, nickname });
+    }
+
+    if (["timeout", "serverMute", "serverDeafen", "voiceDisconnect"].includes(payload.action || "")) {
+      await requirePermission(profile, PERMISSIONS.kickMembers, serverId);
+      if (!membershipIds.has(targetProfileId)) {
+        return apiJson({ error: "Bu kullanıcı topluluğun üyesi değil." }, { status: 404 });
+      }
+      if (payload.action === "timeout") {
+        const minutes = Math.max(0, Math.min(40_320, Number(payload.durationMinutes || 0)));
+        if (!Number.isInteger(minutes)) return apiJson({ error: "Geçersiz timeout süresi." }, { status: 400 });
+        const timeoutUntil = minutes ? new Date(Date.now() + minutes * 60_000).toISOString() : null;
+        await db.update(serverMembers).set({ timeoutUntil, voiceChannelId: minutes ? null : undefined }).where(and(eq(serverMembers.serverId, serverId), eq(serverMembers.profileId, targetProfileId)));
+        await writeAudit(profile.id, "member.timeout", targetProfileId, timeoutUntil || "kaldırıldı", serverId);
+        return apiJson({ ok: true, timeoutUntil });
+      }
+      const field = payload.action === "serverMute" ? "serverMuted" : payload.action === "serverDeafen" ? "serverDeafened" : "voiceChannelId";
+      const value = field === "voiceChannelId" ? null : Boolean(payload.enabled);
+      await db.update(serverMembers).set({ [field]: value }).where(and(eq(serverMembers.serverId, serverId), eq(serverMembers.profileId, targetProfileId)));
+      await writeAudit(profile.id, `member.${payload.action}`, targetProfileId, String(value), serverId);
+      return apiJson({ ok: true, [field]: value });
     }
 
     if (!membershipIds.has(targetProfileId)) {

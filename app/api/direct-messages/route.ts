@@ -2,6 +2,7 @@ import { and, desc, eq, inArray, or } from "drizzle-orm";
 import {
   directConversationMembers,
   directConversationReads,
+  directConversationSettings,
   directConversations,
   directMessageRequests,
   directMessages,
@@ -25,13 +26,17 @@ import { getDb } from "@/db";
 import { avatarUrlFor } from "@/lib/profile-view";
 
 type DirectPayload = {
-  action?: "start" | "send" | "privacy" | "read" | "request";
+  action?: "start" | "group" | "rename" | "send" | "privacy" | "read" | "request" | "settings" | "pin";
   conversationId?: string;
   username?: string;
   content?: string;
   allowFrom?: "friends" | "shared_servers" | "none";
   messageId?: string;
   requestResponse?: "accept" | "ignore";
+  usernames?: string[];
+  name?: string;
+  pinned?: boolean;
+  mutedMinutes?: number;
 };
 
 async function pairConversationId(first: string, second: string) {
@@ -72,8 +77,10 @@ async function requireConversationUnblocked(
     .select({ profileId: directConversationMembers.profileId })
     .from(directConversationMembers)
     .where(eq(directConversationMembers.conversationId, conversationId));
-  const otherProfileId = members.find((member) => member.profileId !== profileId)?.profileId;
-  if (!otherProfileId) throw new ApiError(404, "Özel konuşmanın diğer üyesi bulunamadı.");
+  const otherProfileIds = members
+    .filter((member) => member.profileId !== profileId)
+    .map((member) => member.profileId);
+  if (!otherProfileIds.length) throw new ApiError(404, "Özel konuşmanın diğer üyesi bulunamadı.");
   const relationships = await db
     .select({ status: friendships.status })
     .from(friendships)
@@ -81,10 +88,10 @@ async function requireConversationUnblocked(
       or(
         and(
           eq(friendships.requesterProfileId, profileId),
-          eq(friendships.addresseeProfileId, otherProfileId),
+          inArray(friendships.addresseeProfileId, otherProfileIds),
         ),
         and(
-          eq(friendships.requesterProfileId, otherProfileId),
+          inArray(friendships.requesterProfileId, otherProfileIds),
           eq(friendships.addresseeProfileId, profileId),
         ),
       ),
@@ -114,6 +121,7 @@ export async function GET(request: Request) {
           authorUsername: profiles.username,
           authorAvatarKey: profiles.avatarKey,
           content: directMessages.content,
+          pinned: directMessages.pinned,
           editedAt: directMessages.editedAt,
           deletedAt: directMessages.deletedAt,
           createdAt: directMessages.createdAt,
@@ -149,7 +157,7 @@ export async function GET(request: Request) {
       });
     }
 
-    const [conversationRows, memberRows, recentMessages, readRows, requestRows] = await Promise.all([
+    const [conversationRows, memberRows, recentMessages, readRows, requestRows, settingRows] = await Promise.all([
       db
         .select()
         .from(directConversations)
@@ -178,6 +186,15 @@ export async function GET(request: Request) {
         .select()
         .from(directMessageRequests)
         .where(inArray(directMessageRequests.conversationId, conversationIds)),
+      db
+        .select()
+        .from(directConversationSettings)
+        .where(
+          and(
+            eq(directConversationSettings.profileId, profile.id),
+            inArray(directConversationSettings.conversationId, conversationIds),
+          ),
+        ),
     ]);
     const otherProfileIds = memberRows
       .filter((item) => item.profileId !== profile.id)
@@ -231,9 +248,31 @@ export async function GET(request: Request) {
         const request = requestRows.find(
           (item) => item.conversationId === conversation.id,
         );
-        if (!other || blockedProfileIds.has(other.id)) return null;
+        const settings = settingRows.find(
+          (item) => item.conversationId === conversation.id,
+        );
+        const conversationMemberIds = memberRows
+          .filter(
+            (item) =>
+              item.conversationId === conversation.id && item.profileId !== profile.id,
+          )
+          .map((item) => item.profileId);
+        const groupProfiles = otherProfiles.filter((item) =>
+          conversationMemberIds.includes(item.id),
+        );
+        if (!other || groupProfiles.some((item) => blockedProfileIds.has(item.id))) return null;
         return {
           id: conversation.id,
+          isGroup: conversation.isGroup,
+          name: conversation.isGroup
+            ? conversation.name || groupProfiles.map((item) => item.displayName).join(", ")
+            : null,
+          members: groupProfiles.map((item) => ({
+            id: item.id,
+            name: item.displayName,
+            username: item.username,
+            avatarUrl: avatarUrlFor(item.id, item.avatarKey),
+          })),
           profile: {
             id: other.id,
             name: other.displayName,
@@ -247,6 +286,8 @@ export async function GET(request: Request) {
             : lastMessage?.content || "Yeni konuşma",
           updatedAt: conversation.updatedAt,
           unreadCount,
+          pinned: settings?.pinned || false,
+          mutedUntil: settings?.mutedUntil || null,
           requestStatus: request?.status || null,
           requestDirection: request
             ? request.recipientProfileId === profile.id
@@ -264,7 +305,7 @@ export async function GET(request: Request) {
           conversation.requestStatus === "pending" &&
           conversation.requestDirection === "incoming"
         ),
-    );
+    ).sort((left, right) => Number(Boolean(right?.pinned)) - Number(Boolean(left?.pinned)));
     const requests = allConversations.filter(
       (conversation) =>
         conversation?.requestStatus === "pending" &&
@@ -335,6 +376,35 @@ export async function POST(request: Request) {
           set: { lastReadAt },
         });
       return apiJson({ ok: true });
+    }
+
+    if (payload.action === "settings") {
+      await enforceRateLimit(request, "dm-settings", identity.email, 30, 60_000);
+      const conversationId = cleanText(payload.conversationId, { max: 80 });
+      await requireConversationMember(db, conversationId, profile.id);
+      const mutedMinutes = Math.max(0, Math.min(43_200, Math.trunc(payload.mutedMinutes || 0)));
+      const mutedUntil = mutedMinutes
+        ? new Date(Date.now() + mutedMinutes * 60_000).toISOString()
+        : null;
+      const now = new Date().toISOString();
+      await db
+        .insert(directConversationSettings)
+        .values({
+          id: `${conversationId}:${profile.id}`,
+          conversationId,
+          profileId: profile.id,
+          pinned: Boolean(payload.pinned),
+          mutedUntil,
+          updatedAt: now,
+        })
+        .onConflictDoUpdate({
+          target: [
+            directConversationSettings.conversationId,
+            directConversationSettings.profileId,
+          ],
+          set: { pinned: Boolean(payload.pinned), mutedUntil, updatedAt: now },
+        });
+      return apiJson({ ok: true, pinned: Boolean(payload.pinned), mutedUntil });
     }
 
     if (payload.action === "privacy") {
@@ -482,6 +552,111 @@ export async function POST(request: Request) {
       });
     }
 
+    if (payload.action === "group") {
+      await enforceRateLimit(request, "dm-group", identity.email, 10, 60 * 60_000);
+      const usernames = Array.from(
+        new Set(
+          (payload.usernames || [])
+            .filter((item): item is string => typeof item === "string")
+            .map((item) => item.trim().replace(/^@/, "").toLocaleLowerCase("en-US")),
+        ),
+      ).slice(0, 9);
+      if (usernames.length < 2) {
+        throw new ApiError(400, "Grup konuşması için en az iki kişi seçmelisin.");
+      }
+      const targets = await db.select().from(profiles).where(inArray(profiles.username, usernames));
+      if (targets.length !== usernames.length || targets.some((target) => target.id === profile.id)) {
+        throw new ApiError(404, "Gruba eklenecek kullanıcılardan biri bulunamadı.");
+      }
+      const relationships = await db
+        .select()
+        .from(friendships)
+        .where(
+          and(
+            eq(friendships.status, "accepted"),
+            or(
+              eq(friendships.requesterProfileId, profile.id),
+              eq(friendships.addresseeProfileId, profile.id),
+            ),
+          ),
+        );
+      const friendIds = new Set(
+        relationships.map((relationship) =>
+          relationship.requesterProfileId === profile.id
+            ? relationship.addresseeProfileId
+            : relationship.requesterProfileId,
+        ),
+      );
+      if (targets.some((target) => !friendIds.has(target.id))) {
+        throw new ApiError(403, "Grup konuşmasına yalnızca arkadaşlarını ekleyebilirsin.");
+      }
+      const now = new Date().toISOString();
+      const conversationId = `group:${crypto.randomUUID()}`;
+      const name = payload.name ? cleanText(payload.name, { min: 1, max: 40 }) : null;
+      await db.insert(directConversations).values({
+        id: conversationId,
+        name,
+        isGroup: true,
+        ownerProfileId: profile.id,
+        createdAt: now,
+        updatedAt: now,
+      });
+      await db.insert(directConversationMembers).values(
+        [profile, ...targets].map((member) => ({
+          id: `${conversationId}:${member.id}`,
+          conversationId,
+          profileId: member.id,
+          joinedAt: now,
+        })),
+      );
+      return apiJson(
+        {
+          conversation: {
+            id: conversationId,
+            isGroup: true,
+            name: name || targets.map((target) => target.displayName).join(", "),
+            members: targets.map((target) => ({
+              id: target.id,
+              name: target.displayName,
+              username: target.username,
+              avatarUrl: avatarUrlFor(target.id, target.avatarKey),
+            })),
+            profile: {
+              id: targets[0].id,
+              name: targets[0].displayName,
+              username: targets[0].username,
+              avatarUrl: avatarUrlFor(targets[0].id, targets[0].avatarKey),
+            },
+            lastMessage: "Yeni grup konuşması",
+            updatedAt: now,
+            unreadCount: 0,
+            requestStatus: null,
+            requestDirection: null,
+          },
+        },
+        { status: 201 },
+      );
+    }
+
+    if (payload.action === "rename") {
+      const conversationId = cleanText(payload.conversationId, { max: 80 });
+      await requireConversationMember(db, conversationId, profile.id);
+      const [conversation] = await db
+        .select()
+        .from(directConversations)
+        .where(eq(directConversations.id, conversationId))
+        .limit(1);
+      if (!conversation?.isGroup) {
+        throw new ApiError(400, "Yalnızca grup konuşmaları adlandırılabilir.");
+      }
+      const name = cleanText(payload.name, { min: 1, max: 40 });
+      await db
+        .update(directConversations)
+        .set({ name, updatedAt: new Date().toISOString() })
+        .where(eq(directConversations.id, conversationId));
+      return apiJson({ ok: true, name });
+    }
+
     if (payload.action === "send") {
       await enforceRateLimit(request, "dm-send", identity.email, 40, 60_000);
       const conversationId = cleanText(payload.conversationId, { max: 80 });
@@ -576,16 +751,28 @@ export async function PATCH(request: Request) {
     await enforceRateLimit(request, "dm-edit", identity.email, 30, 60_000);
     const payload = await readJson<DirectPayload>(request, 8_192);
     const messageId = cleanText(payload.messageId, { max: 80 });
-    const content = cleanText(payload.content, { min: 1, max: 2_000, multiline: true });
     const db = getDb();
     const [message] = await db
       .select()
       .from(directMessages)
       .where(eq(directMessages.id, messageId))
       .limit(1);
-    if (!message || message.authorProfileId !== profile.id || message.deletedAt) {
+    if (!message || message.deletedAt) {
+      throw new ApiError(404, "Mesaj bulunamadı.");
+    }
+    await requireConversationMember(db, message.conversationId, profile.id);
+    if (payload.action === "pin") {
+      const pinned = Boolean(payload.pinned);
+      await db
+        .update(directMessages)
+        .set({ pinned })
+        .where(eq(directMessages.id, messageId));
+      return apiJson({ message: { ...message, pinned } });
+    }
+    if (message.authorProfileId !== profile.id) {
       throw new ApiError(403, "Bu özel mesajı düzenleyemezsin.");
     }
+    const content = cleanText(payload.content, { min: 1, max: 2_000, multiline: true });
     const editedAt = new Date().toISOString();
     await db
       .update(directMessages)

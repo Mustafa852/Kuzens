@@ -1,4 +1,4 @@
-import { and, asc, eq, or } from "drizzle-orm";
+import { and, asc, eq, inArray, or } from "drizzle-orm";
 import {
   channels,
   friendships,
@@ -175,7 +175,7 @@ export async function POST(request: Request) {
             eq(messages.id, parentMessageId),
             eq(messages.channelId, channelId),
             eq(channels.serverId, serverId),
-            eq(channels.kind, "text"),
+            inArray(channels.kind, ["text", "forum", "announcement"]),
           ),
         )
         .limit(1);

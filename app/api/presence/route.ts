@@ -30,6 +30,14 @@ export async function POST(request: Request) {
     await enforceRateLimit(request, "presence", identity.email, 40, 60_000);
     let voiceChannelId: string | null = null;
     if (payload.voiceChannelId) {
+      const [membership] = await db
+        .select()
+        .from(serverMembers)
+        .where(and(eq(serverMembers.serverId, serverId), eq(serverMembers.profileId, profile.id)))
+        .limit(1);
+      if (membership?.timeoutUntil && membership.timeoutUntil > new Date().toISOString()) {
+        return apiJson({ error: "Timeout süren bitene kadar ses odasına katılamazsın." }, { status: 403 });
+      }
       const [voiceChannel] = await db
         .select()
         .from(channels)

@@ -4,9 +4,11 @@ import {
   auraMemberships,
   auraRedemptions,
   channelNotificationSettings,
+  channelMemberPermissionOverwrites,
   channelReads,
   directConversationMembers,
   directConversationReads,
+  directConversationSettings,
   directConversations,
   directMessageRequests,
   directMessages,
@@ -14,6 +16,7 @@ import {
   friendships,
   memberRoles,
   messageBookmarks,
+  messageAttachments,
   messageMentions,
   messageReactions,
   messages,
@@ -109,6 +112,10 @@ export async function DELETE(request: Request) {
     const conversationIds = Array.from(
       new Set(conversationMemberships.map((item) => item.conversationId)),
     );
+    const uploadedAttachments = await db
+      .select()
+      .from(messageAttachments)
+      .where(eq(messageAttachments.uploaderProfileId, profile.id));
 
     await db
       .delete(friendships)
@@ -136,6 +143,7 @@ export async function DELETE(request: Request) {
       .delete(channelNotificationSettings)
       .where(eq(channelNotificationSettings.profileId, profile.id));
     await db.delete(channelReads).where(eq(channelReads.profileId, profile.id));
+    await db.delete(channelMemberPermissionOverwrites).where(eq(channelMemberPermissionOverwrites.profileId, profile.id));
     await db
       .delete(auraRedemptions)
       .where(eq(auraRedemptions.profileId, profile.id));
@@ -168,6 +176,9 @@ export async function DELETE(request: Request) {
       await db
         .delete(directConversationReads)
         .where(eq(directConversationReads.profileId, profile.id));
+      await db
+        .delete(directConversationSettings)
+        .where(eq(directConversationSettings.profileId, profile.id));
       await db
         .delete(directMessageRequests)
         .where(
@@ -218,12 +229,19 @@ export async function DELETE(request: Request) {
         ),
       );
     await db.delete(profiles).where(eq(profiles.id, profile.id));
+    for (const attachment of uploadedAttachments) {
+      await getUploads().delete(attachment.storageKey).catch(() => undefined);
+    }
+    await db.delete(messageAttachments).where(eq(messageAttachments.uploaderProfileId, profile.id));
     if (profile.avatarKey) {
       try {
         await getUploads().delete(profile.avatarKey);
       } catch {
         // Account deletion must complete even if a stale object is already unavailable.
       }
+    }
+    if (profile.bannerKey) {
+      await getUploads().delete(profile.bannerKey).catch(() => undefined);
     }
 
     return apiJson({ ok: true });

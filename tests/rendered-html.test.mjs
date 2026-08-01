@@ -113,7 +113,7 @@ test("scrolls messages inside their own panel", () => {
   );
   assert.match(appSource, /const messageList = useRef<HTMLDivElement \| null>/);
   assert.match(appSource, /list\.scrollTo\(\{[\s\S]*?top:\s*list\.scrollHeight/);
-  assert.match(appSource, /className="message-list"[\s\S]{0,80}ref=\{messageList\}/);
+  assert.match(appSource, /className=\{`message-list[\s\S]{0,120}ref=\{messageList\}/);
   assert.match(appSource, /stickToLatest/);
   assert.match(appSource, /className="jump-latest"/);
   assert.doesNotMatch(appSource, /messagesEnd\.current\?\.scrollIntoView/);
@@ -181,7 +181,9 @@ test("keeps every state-changing API behind shared request and abuse guards", ()
 });
 
 test("keeps user content inert and realtime signals targeted", () => {
-  assert.doesNotMatch(appSource, /dangerouslySetInnerHTML|eval\(|new Function|Notification\./);
+  assert.doesNotMatch(appSource, /dangerouslySetInnerHTML|eval\(|new Function/);
+  assert.match(appSource, /Notification\.permission === "granted"/);
+  assert.match(appSource, /Notification\.requestPermission\(\)/);
   assert.match(rtcRoute, /recipientProfileId/);
   assert.match(rtcRoute, /Kendine sinyal gönderemezsin/);
   assert.match(rtcRoute, /Yalnızca aynı ses odasındaki üyeler/);
@@ -422,7 +424,8 @@ test("provides a permissioned and persistent new-member guide", () => {
 test("ships an installable shell without caching private application data", () => {
   assert.match(manifestSource, /display:\s*"standalone"/);
   assert.match(serviceWorkerSource, /skipWaiting/);
-  assert.doesNotMatch(serviceWorkerSource, /fetch|caches\./);
+  assert.match(serviceWorkerSource, /url\.pathname\.startsWith\("\/api\/"\)\) return/);
+  assert.doesNotMatch(serviceWorkerSource, /cache\.put\([^\n]*\/api\//);
   assert.match(layoutSource, /favicon\.svg/);
 });
 

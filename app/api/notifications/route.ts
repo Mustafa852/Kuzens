@@ -106,6 +106,7 @@ export async function GET(request: Request) {
         }
         return {
           id: mention.id,
+          kind: mention.kind,
           messageId: message.id,
           serverId: server.id,
           serverName: server.name,

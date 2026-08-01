@@ -96,7 +96,7 @@ export async function GET(request: Request) {
     const profile = await requireProfile(identity);
     const db = getDb();
     const serverId = new URL(request.url).searchParams.get("serverId");
-    if (serverId) await requireMember(profile.id, serverId);
+    if (serverId) await requireMember(identity, serverId);
     const [membership] = await db
       .select()
       .from(auraMemberships)
@@ -283,7 +283,7 @@ export async function POST(request: Request) {
     await enforceRateLimit(request, "aura-owner", identity.email, 40, 60 * 60_000);
 
     if (payload.action === "create-code") {
-      const durationDays = validatedDuration(payload.durationDays);
+      const durationDays = validatedDuration(payload.durationDays) ?? 30;
       const maxUses = Number(payload.maxUses ?? 1);
       if (!Number.isInteger(maxUses) || maxUses < 1 || maxUses > 100) {
         throw new ApiError(400, "Kod kullanım sınırı 1–100 arasında olmalı.");

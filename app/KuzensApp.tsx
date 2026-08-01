@@ -4,6 +4,7 @@ import {
   FormEvent,
   type ChangeEvent,
   type MouseEvent as ReactMouseEvent,
+  type TouchEvent as ReactTouchEvent,
   useCallback,
   useEffect,
   useMemo,
@@ -16,12 +17,14 @@ type Channel = {
   id: string;
   serverId: string;
   name: string;
-  kind: "text" | "voice";
+  kind: "text" | "voice" | "forum" | "announcement";
+  categoryId?: string | null;
   topic?: string | null;
   slowModeSeconds?: number;
   bitrate?: number;
   userLimit?: number;
   region?: string;
+  historyMode?: "all" | "since_join";
   permissions?: number;
   position: number;
   unreadCount?: number;
@@ -29,6 +32,27 @@ type Channel = {
   notificationLevel?: "all" | "mentions" | "none";
   showUnread?: boolean;
 };
+
+type ChannelCategory = {
+  id: string;
+  serverId: string;
+  name: string;
+  position: number;
+  collapsedByDefault: boolean;
+};
+
+type MessageAttachment = {
+  id: string;
+  messageId: string;
+  fileName: string;
+  contentType: string;
+  size: number;
+  width?: number | null;
+  height?: number | null;
+  url: string;
+};
+
+type CustomEmoji = { id: string; name: string; url: string; createdAt: string };
 
 type ChatMessage = {
   id: string;
@@ -48,6 +72,7 @@ type ChatMessage = {
   createdAt: string;
   poll?: PollData | null;
   thread?: ThreadSummary | null;
+  attachments?: MessageAttachment[];
 };
 
 type ThreadSummary = {
@@ -117,6 +142,10 @@ type Profile = {
   customStatus?: string;
   presenceStatus?: "online" | "idle" | "dnd" | "invisible";
   avatarUrl?: string | null;
+  bannerUrl?: string | null;
+  profileColor?: string;
+  statusExpiresAt?: string | null;
+  allowFriendRequests?: boolean;
   isOwner: boolean;
 };
 
@@ -144,6 +173,14 @@ type ChannelPermissionOverwrite = {
   denyPermissions: number;
 };
 
+type ChannelMemberPermissionOverwrite = {
+  id?: string;
+  channelId: string;
+  profileId: string;
+  allowPermissions: number;
+  denyPermissions: number;
+};
+
 type Member = {
   id: string;
   name: string;
@@ -156,6 +193,12 @@ type Member = {
   presenceStatus?: "online" | "idle" | "dnd" | "invisible" | "offline";
   bio?: string;
   avatarUrl?: string | null;
+  displayName?: string;
+  bannerUrl?: string | null;
+  profileColor?: string;
+  timeoutUntil?: string | null;
+  serverMuted?: boolean;
+  serverDeafened?: boolean;
   role: { id: string; name: string; color: string } | null;
   roles?: Array<{ id: string; name: string; color: string }>;
 };
@@ -172,7 +215,7 @@ type RtcSignal = {
   id: string;
   senderProfileId: string;
   recipientProfileId: string;
-  type: "offer" | "answer" | "ice";
+  type: "offer" | "answer" | "ice" | "sound";
   payload: string;
   createdAt: string;
 };
@@ -206,6 +249,7 @@ type MentionNotification = {
   authorName: string;
   content: string;
   createdAt: string;
+  kind?: "mention" | "reply" | "role" | "everyone";
 };
 
 type AuraMembership = {
@@ -275,6 +319,11 @@ type DirectConversation = {
   unreadCount?: number;
   requestStatus?: "pending" | "accepted" | "ignored" | null;
   requestDirection?: "incoming" | "outgoing" | null;
+  isGroup?: boolean;
+  name?: string | null;
+  members?: Array<{ id: string; name: string; username: string; avatarUrl?: string | null }>;
+  pinned?: boolean;
+  mutedUntil?: string | null;
 };
 
 type DirectMessage = {
@@ -285,6 +334,7 @@ type DirectMessage = {
   authorUsername: string;
   authorAvatarUrl?: string | null;
   content: string;
+  pinned?: boolean;
   editedAt?: string | null;
   deletedAt?: string | null;
   createdAt: string;
@@ -299,6 +349,17 @@ type AuditEntry = {
   actorProfileId: string;
   actorName: string;
   actorUsername: string;
+};
+
+type ContentReport = {
+  id: string;
+  targetType: "message" | "profile";
+  targetId: string;
+  reason: string;
+  details: string;
+  status: "open" | "reviewed" | "closed";
+  reporterProfileId: string;
+  createdAt: string;
 };
 
 type CommunityEvent = {
@@ -332,6 +393,9 @@ type AutoModSettings = {
   blockInviteLinks: boolean;
   blockDuplicateMessages: boolean;
   maxMentions: number;
+  blockedDomains: string;
+  maxMessagesPerMinute: number;
+  raidJoinLimit: number;
   exemptChannelIds: string[];
 };
 
@@ -376,7 +440,8 @@ const defaultPreferences: AppPreferences = {
 type ContextMenuState = {
   x: number;
   y: number;
-  kind: "server" | "channel" | "message" | "member";
+  kind: "server" | "category" | "channel" | "message" | "member";
+  category?: ChannelCategory;
   channel?: Channel;
   message?: ChatMessage;
   member?: Member;
@@ -397,8 +462,8 @@ const permissionOptions = [
 ];
 
 const channelPermissionOptions = [
-  { bit: 256, label: "Odayı gör", kinds: ["text", "voice"] as const },
-  { bit: 512, label: "Mesaj gönder", kinds: ["text"] as const },
+  { bit: 256, label: "Odayı gör", kinds: ["text", "voice", "forum", "announcement"] as const },
+  { bit: 512, label: "Mesaj gönder", kinds: ["text", "voice", "forum", "announcement"] as const },
   { bit: 64, label: "Odaya katıl", kinds: ["voice"] as const },
   { bit: 1024, label: "Konuş", kinds: ["voice"] as const },
   { bit: 128, label: "Ekran paylaş", kinds: ["voice"] as const },
@@ -418,6 +483,15 @@ function toneFor(value: string) {
   let hash = 0;
   for (const character of value) hash = (hash * 31 + character.charCodeAt(0)) >>> 0;
   return memberTones[hash % memberTones.length];
+}
+
+function fileAsDataUrl(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(new Error("Dosya okunamadı."));
+    reader.readAsDataURL(file);
+  });
 }
 
 function apiFetch(input: RequestInfo | URL, init: RequestInit = {}) {
@@ -577,32 +651,92 @@ function MessageText({
   content,
   members,
   onMention,
+  emojis = [],
 }: {
   content: string;
   members: Member[];
   onMention: (tag: string) => void;
+  emojis?: CustomEmoji[];
 }) {
-  const parts = content.split(/(@(?:everyone|here|[a-z0-9_]{3,24}))/gi);
-  return (
-    <>
-      {parts.map((part, index) => {
-        if (!part.startsWith("@")) return <span key={`${part}-${index}`}>{part}</span>;
-        const member = members.find(
-          (item) => item.tag.toLocaleLowerCase("en-US") === part.toLocaleLowerCase("en-US"),
+  const [revealedSpoilers, setRevealedSpoilers] = useState<Set<number>>(() => new Set());
+  const roleTags = new Set(
+    members.flatMap((member) =>
+      (member.roles || []).map(
+        (role) =>
+          `@${role.name
+            .toLocaleLowerCase("tr-TR")
+            .replace(/\s+/g, "-")
+            .replace(/[^a-z0-9ğüşöçı_-]/g, "")}`,
+      ),
+    ),
+  );
+  const renderInline = (value: string, groupIndex: number) => {
+    const parts = value.split(/(https?:\/\/[^\s<>'"]+|@(?:everyone|here|[a-z0-9_ğüşöçı-]{2,40})|:[a-z0-9_]{2,24}:|\*\*[^*\n]+\*\*|~~[^~\n]+~~|\|\|[^|\n]+\|\||`[^`\n]+`|\n)/gi);
+    return parts.map((part, index) => {
+      const key = `${groupIndex}-${index}`;
+      if (part === "\n") return <br key={key} />;
+      if (/^:[a-z0-9_]{2,24}:$/i.test(part)) {
+        const emoji = emojis.find((item) => `:${item.name}:` === part.toLocaleLowerCase("en-US"));
+        if (emoji) return (
+          <span key={key} className="custom-emoji-wrap">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img className="custom-emoji-inline" src={emoji.url} alt={part} title={part} />
+          </span>
         );
-        const mass = /^@(everyone|here)$/i.test(part);
-        if (!member && !mass) return <span key={`${part}-${index}`}>{part}</span>;
+      }
+      if (/^https?:\/\//i.test(part)) {
+        return <a key={key} className="inline-link" href={part} target="_blank" rel="noopener noreferrer nofollow">{part}</a>;
+      }
+      if (part.startsWith("**") && part.endsWith("**")) return <strong key={key}>{part.slice(2, -2)}</strong>;
+      if (part.startsWith("~~") && part.endsWith("~~")) return <del key={key}>{part.slice(2, -2)}</del>;
+      if (part.startsWith("`") && part.endsWith("`")) return <code key={key}>{part.slice(1, -1)}</code>;
+      if (part.startsWith("||") && part.endsWith("||")) {
+        const spoilerKey = groupIndex * 1_000 + index;
+        const revealed = revealedSpoilers.has(spoilerKey);
         return (
           <button
             type="button"
-            className={`inline-mention ${mass ? "mass" : ""}`}
-            key={`${part}-${index}`}
-            onClick={() => onMention(member?.tag || part)}
+            key={key}
+            className={`spoiler-text ${revealed ? "revealed" : ""}`}
+            onClick={() => setRevealedSpoilers((current) => {
+              const next = new Set(current);
+              if (revealed) next.delete(spoilerKey); else next.add(spoilerKey);
+              return next;
+            })}
           >
-            {member?.tag || part}
+            {part.slice(2, -2)}
           </button>
         );
-      })}
+      }
+      if (!part.startsWith("@")) return <span key={key}>{part}</span>;
+      const member = members.find(
+        (item) => item.tag.toLocaleLowerCase("en-US") === part.toLocaleLowerCase("en-US"),
+      );
+      const mass = /^@(everyone|here)$/i.test(part);
+      const role = roleTags.has(part.toLocaleLowerCase("tr-TR"));
+      if (!member && !mass && !role) return <span key={key}>{part}</span>;
+      return (
+        <button
+          type="button"
+          className={`inline-mention ${mass ? "mass" : ""} ${role ? "role" : ""}`}
+          key={key}
+          onClick={() => onMention(member?.tag || part)}
+        >
+          {member?.tag || part}
+        </button>
+      );
+    });
+  };
+  const blocks = content.split(/(```[\s\S]*?```)/g);
+  return (
+    <>
+      {blocks.map((block, index) =>
+        block.startsWith("```") && block.endsWith("```") ? (
+          <pre className="message-code-block" key={index}><code>{block.slice(3, -3).replace(/^\w+\n/, "")}</code></pre>
+        ) : (
+          <span key={index}>{renderInline(block, index)}</span>
+        ),
+      )}
     </>
   );
 }
@@ -797,6 +931,9 @@ export function KuzensApp() {
   const [activeServerId, setActiveServerId] = useState("kuzens");
   const [serverRefresh, setServerRefresh] = useState(0);
   const [channels, setChannels] = useState<Channel[]>(fallbackChannels);
+  const [categories, setCategories] = useState<ChannelCategory[]>([]);
+  const [customEmojis, setCustomEmojis] = useState<CustomEmoji[]>([]);
+  const [collapsedCategories, setCollapsedCategories] = useState<Set<string>>(() => new Set());
   const [activeChannel, setActiveChannel] = useState("genel");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [members, setMembers] = useState<Member[]>([]);
@@ -814,7 +951,7 @@ export function KuzensApp() {
   const [sharing, setSharing] = useState(false);
   const [toast, setToast] = useState<Toast | null>(null);
   const [modal, setModal] = useState<
-    "channel" | "channelSettings" | "channelNotifications" | "roles" | "server" | "serverSettings" | "friends" | "account" | "profile" | "memberProfile" | "notifications" | "aura" | "preferences" | "directMessages" | "auditLog" | "events" | "automod" | "bookmarks" | "poll" | "thread" | "guide" | null
+    "channel" | "category" | "channelSettings" | "channelNotifications" | "roles" | "server" | "serverSettings" | "friends" | "account" | "profile" | "memberProfile" | "notifications" | "aura" | "preferences" | "directMessages" | "groupDirect" | "auditLog" | "events" | "automod" | "bookmarks" | "poll" | "thread" | "guide" | "reports" | null
   >(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [newServerName, setNewServerName] = useState("");
@@ -827,17 +964,23 @@ export function KuzensApp() {
   const [serverSystemChannelId, setServerSystemChannelId] = useState("");
   const [serverSaving, setServerSaving] = useState(false);
   const [newChannelName, setNewChannelName] = useState("");
-  const [newChannelKind, setNewChannelKind] = useState<"text" | "voice">("text");
+  const [newChannelKind, setNewChannelKind] = useState<"text" | "voice" | "forum" | "announcement">("text");
+  const [newChannelCategoryId, setNewChannelCategoryId] = useState("");
+  const [newCategoryName, setNewCategoryName] = useState("");
+  const [editingCategory, setEditingCategory] = useState<ChannelCategory | null>(null);
   const [channelSettingsName, setChannelSettingsName] = useState("");
   const [channelSettingsTopic, setChannelSettingsTopic] = useState("");
   const [channelSlowMode, setChannelSlowMode] = useState(0);
   const [channelBitrate, setChannelBitrate] = useState(64_000);
   const [channelUserLimit, setChannelUserLimit] = useState(0);
   const [channelRegion, setChannelRegion] = useState("auto");
+  const [channelCategoryId, setChannelCategoryId] = useState("");
+  const [channelHistoryMode, setChannelHistoryMode] = useState<"all" | "since_join">("all");
   const [channelPermissionRoles, setChannelPermissionRoles] = useState<Role[]>([]);
   const [channelPermissionOverwrites, setChannelPermissionOverwrites] = useState<
     ChannelPermissionOverwrite[]
   >([]);
+  const [channelMemberPermissionOverwrites, setChannelMemberPermissionOverwrites] = useState<ChannelMemberPermissionOverwrite[]>([]);
   const [channelPermissionsLoading, setChannelPermissionsLoading] = useState(false);
   const [profileDisplayName, setProfileDisplayName] = useState("");
   const [profileUsername, setProfileUsername] = useState("");
@@ -849,11 +992,18 @@ export function KuzensApp() {
   const [profileAvatarPreview, setProfileAvatarPreview] = useState<string | null>(null);
   const [profileAvatarDataUrl, setProfileAvatarDataUrl] = useState<string | null>(null);
   const [profileRemoveAvatar, setProfileRemoveAvatar] = useState(false);
+  const [profileBannerPreview, setProfileBannerPreview] = useState<string | null>(null);
+  const [profileBannerDataUrl, setProfileBannerDataUrl] = useState<string | null>(null);
+  const [profileRemoveBanner, setProfileRemoveBanner] = useState(false);
+  const [profileColor, setProfileColor] = useState("#8b5cf6");
+  const [profileStatusDuration, setProfileStatusDuration] = useState("0");
+  const [profileAllowFriendRequests, setProfileAllowFriendRequests] = useState(true);
   const [profileSaving, setProfileSaving] = useState(false);
   const [accountDeleteUsername, setAccountDeleteUsername] = useState("");
   const [accountDeleteConfirmation, setAccountDeleteConfirmation] = useState("");
   const [accountDeleting, setAccountDeleting] = useState(false);
   const [notifications, setNotifications] = useState<MentionNotification[]>([]);
+  const [notificationTab, setNotificationTab] = useState<"all" | "mentions" | "replies">("all");
   const [viewingMember, setViewingMember] = useState<Member | null>(null);
   const [showPinnedOnly, setShowPinnedOnly] = useState(false);
   const [mobileChannels, setMobileChannels] = useState(false);
@@ -898,9 +1048,13 @@ export function KuzensApp() {
   const [directMessages, setDirectMessages] = useState<DirectMessage[]>([]);
   const [activeDirectConversationId, setActiveDirectConversationId] = useState("");
   const [directDraft, setDirectDraft] = useState("");
+  const [directSearch, setDirectSearch] = useState("");
   const [directLoading, setDirectLoading] = useState(false);
   const [directPrivacy, setDirectPrivacy] = useState<"friends" | "shared_servers" | "none">("friends");
   const [directUsername, setDirectUsername] = useState("");
+  const [groupDirectName, setGroupDirectName] = useState("");
+  const [groupDirectMembers, setGroupDirectMembers] = useState<Set<string>>(() => new Set());
+  const [friendTab, setFriendTab] = useState<"online" | "all" | "pending" | "blocked">("online");
   const [draftLoadedKey, setDraftLoadedKey] = useState("");
   const [directDraftLoadedKey, setDirectDraftLoadedKey] = useState("");
   const [notificationChannel, setNotificationChannel] = useState<Channel | null>(null);
@@ -908,6 +1062,8 @@ export function KuzensApp() {
   const [notificationShowUnread, setNotificationShowUnread] = useState(false);
   const [auditEntries, setAuditEntries] = useState<AuditEntry[]>([]);
   const [auditLoading, setAuditLoading] = useState(false);
+  const [contentReports, setContentReports] = useState<ContentReport[]>([]);
+  const [reportsLoading, setReportsLoading] = useState(false);
   const [communityEvents, setCommunityEvents] = useState<CommunityEvent[]>([]);
   const [eventsLoading, setEventsLoading] = useState(false);
   const [eventsCanManage, setEventsCanManage] = useState(false);
@@ -933,6 +1089,9 @@ export function KuzensApp() {
     blockInviteLinks: true,
     blockDuplicateMessages: true,
     maxMentions: 8,
+    blockedDomains: "",
+    maxMessagesPerMinute: 12,
+    raidJoinLimit: 10,
     exemptChannelIds: [],
   });
   const [autoModLoading, setAutoModLoading] = useState(false);
@@ -967,10 +1126,19 @@ export function KuzensApp() {
   const [guideSaving, setGuideSaving] = useState(false);
   const [guideServerId, setGuideServerId] = useState("");
   const [remoteStreams, setRemoteStreams] = useState<Record<string, MediaStream>>({});
+  const [speakingMembers, setSpeakingMembers] = useState<Set<string>>(() => new Set());
+  const [connectionQuality, setConnectionQuality] = useState<"good" | "fair" | "poor">("good");
+  const [cameraEnabled, setCameraEnabled] = useState(false);
+  const [voiceTextDraft, setVoiceTextDraft] = useState("");
+  const [pendingAttachments, setPendingAttachments] = useState<File[]>([]);
+  const [installPrompt, setInstallPrompt] = useState<Event | null>(null);
   const voiceStream = useRef<MediaStream | null>(null);
   const displayStream = useRef<MediaStream | null>(null);
   const previewVideo = useRef<HTMLVideoElement | null>(null);
   const messageList = useRef<HTMLDivElement | null>(null);
+  const attachmentInput = useRef<HTMLInputElement | null>(null);
+  const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const knownNotificationIds = useRef<Set<string> | null>(null);
   const stickToLatest = useRef(true);
   const searchInput = useRef<HTMLInputElement | null>(null);
   const directMessageList = useRef<HTMLDivElement | null>(null);
@@ -993,6 +1161,13 @@ export function KuzensApp() {
     null;
   const activeDirectRequest =
     directRequests.find((conversation) => conversation.id === activeDirectConversationId) || null;
+  const visibleDirectMessages = directSearch.trim()
+    ? directMessages.filter((message) =>
+        `${message.authorName} ${message.authorUsername} ${message.content}`
+          .toLocaleLowerCase("tr-TR")
+          .includes(directSearch.trim().toLocaleLowerCase("tr-TR")),
+      )
+    : directMessages;
   const directUnreadCount = directConversations.reduce(
     (total, conversation) => total + (conversation.unreadCount || 0),
     directRequests.length,
@@ -1005,11 +1180,14 @@ export function KuzensApp() {
     servers.find((server) => server.id === activeServerId) ||
     ({ id: "kuzens", name: "Kuzens", icon: "KZ" } satisfies CommunityServer);
   const selectedRole = roleItems.find((role) => role.id === selectedRoleId);
-  const textChannels = channels.filter((channel) => channel.kind === "text");
+  const textChannels = channels.filter((channel) => channel.kind !== "voice");
   const voiceChannels = channels.filter((channel) => channel.kind === "voice");
+  const uncategorizedTextChannels = textChannels.filter((channel) => !channel.categoryId);
+  const uncategorizedVoiceChannels = voiceChannels.filter((channel) => !channel.categoryId);
   const favoriteChannels = channels.filter((channel) => favoriteChannelIds.has(channel.id));
   const onlineMembers = members.filter((member) => member.online);
   const offlineMembers = members.filter((member) => !member.online);
+  const selfMember = members.find((member) => member.id === profile?.id);
   const voiceRoomMembers = members.filter(
     (member) => member.voiceChannelId === selected?.id,
   );
@@ -1043,8 +1221,10 @@ export function KuzensApp() {
       ? [64_000, 128_000, 192_000, 256_000][serverAuraMembership.tier] || 128_000
       : 64_000;
   const canSpeakInConnectedVoice =
-    !connectedVoiceChannel ||
-    (((connectedVoiceChannel.permissions ?? permissions) & 1024) !== 0);
+    (!connectedVoiceChannel ||
+      (((connectedVoiceChannel.permissions ?? permissions) & 1024) !== 0)) &&
+    !selfMember?.serverMuted &&
+    !(selfMember?.timeoutUntil && selfMember.timeoutUntil > new Date().toISOString());
   const canShareInConnectedVoice =
     !connectedVoiceChannel ||
     (((connectedVoiceChannel.permissions ?? permissions) & 128) !== 0);
@@ -1053,13 +1233,26 @@ export function KuzensApp() {
       ? Boolean(profile?.isOwner)
       : activeServer.ownerProfileId === profile?.id;
   const mentionQuery = useMemo(() => {
-    const match = draft.match(/(?:^|\s)@([a-z0-9_]*)$/i);
+    const match = draft.match(/(?:^|\s)@([a-z0-9_ğüşöçı-]*)$/i);
     return match ? match[1].toLocaleLowerCase("en-US") : null;
   }, [draft]);
+  const roleMentionCandidates = Array.from(
+    new Map(
+      members.flatMap((member) =>
+        (member.roles || []).map((role) => {
+          const token = role.name
+            .toLocaleLowerCase("tr-TR")
+            .replace(/\s+/g, "-")
+            .replace(/[^a-z0-9ğüşöçı_-]/g, "");
+          return [role.id, { id: `role:${role.id}`, name: role.name, tag: `@${token}`, avatarUrl: null }] as const;
+        }),
+      ),
+    ).values(),
+  );
   const mentionCandidates =
     mentionQuery === null
       ? []
-      : members
+      : [...members, ...roleMentionCandidates]
           .filter(
             (member) =>
               member.tag.slice(1).toLocaleLowerCase("en-US").includes(mentionQuery) ||
@@ -1075,6 +1268,12 @@ export function KuzensApp() {
         matchesSearch(message, search),
     );
   }, [activeChannel, messages, search, showPinnedOnly]);
+  const visibleFriendItems = friendItems.filter((item) => {
+    if (friendTab === "blocked") return item.status === "blocked";
+    if (friendTab === "pending") return item.status === "pending";
+    if (item.status !== "accepted") return false;
+    return friendTab === "all" || members.some((member) => member.id === item.profile.id && member.online);
+  });
   const eventOccurrences = useMemo(
     () =>
       communityEvents
@@ -1097,11 +1296,11 @@ export function KuzensApp() {
 
   useEffect(() => {
     apiFetch("/api/profile")
-      .then((response) => response.json())
-      .then((data: {
+      .then(async (response) => (await response.json()) as {
         profile?: Profile | null;
         identity?: { displayName?: string; suggestedUsername?: string };
-      }) => {
+      })
+      .then((data) => {
         setProfile(data.profile ?? null);
         setRegistrationName(data.identity?.displayName || "Savaş");
         setRegistrationUsername(data.identity?.suggestedUsername || "savas");
@@ -1139,8 +1338,8 @@ export function KuzensApp() {
   useEffect(() => {
     if (!profile) return;
     apiFetch("/api/servers")
-      .then((response) => response.json())
-      .then((data: { servers?: CommunityServer[] }) => {
+      .then(async (response) => (await response.json()) as { servers?: CommunityServer[] })
+      .then((data) => {
         const nextServers = data.servers || [];
         setServers(nextServers);
         if (nextServers.length && !nextServers.some((server) => server.id === activeServerId)) {
@@ -1152,9 +1351,12 @@ export function KuzensApp() {
 
   useEffect(() => {
     if (!profile) return;
-    apiFetch(`/api/channels?server=${encodeURIComponent(activeServerId)}`)
-      .then((response) => response.json())
-      .then((data: { channels?: Channel[] }) => {
+    Promise.all([
+      apiFetch(`/api/channels?server=${encodeURIComponent(activeServerId)}`).then(async (response) => (await response.json()) as { channels?: Channel[] }),
+      apiFetch(`/api/categories?server=${encodeURIComponent(activeServerId)}`).then(async (response) => (await response.json()) as { categories?: ChannelCategory[] }),
+      apiFetch(`/api/emojis?server=${encodeURIComponent(activeServerId)}`).then(async (response) => (await response.json()) as { emojis?: CustomEmoji[] }),
+    ])
+      .then(([data, categoryData, emojiData]) => {
         if (data.channels?.length) {
           setChannels(data.channels);
           setActiveChannel((current) =>
@@ -1163,12 +1365,18 @@ export function KuzensApp() {
               : data.channels![0].id,
           );
         }
+        const nextCategories = categoryData.categories || [];
+        setCategories(nextCategories);
+        setCollapsedCategories(
+          new Set(nextCategories.filter((item) => item.collapsedByDefault).map((item) => item.id)),
+        );
+        setCustomEmojis(emojiData.emojis || []);
       })
       .catch(() => undefined);
   }, [activeServerId, profile]);
 
   useEffect(() => {
-    if (!profile || selected?.kind !== "text") return;
+    if (!profile) return;
     let cancelled = false;
     async function syncMessages(initial = false) {
       if (initial) setLoadingMessages(true);
@@ -1366,6 +1574,74 @@ export function KuzensApp() {
   }, [sharing]);
 
   useEffect(() => {
+    if (!voiceConnected) {
+      window.queueMicrotask(() => setSpeakingMembers(new Set()));
+      return;
+    }
+    const AudioContextClass = window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioContextClass) return;
+    const context = new AudioContextClass();
+    const analysers: Array<{ id: string; analyser: AnalyserNode; data: Uint8Array<ArrayBuffer> }> = [];
+    const streams = [
+      ...(profile && voiceStream.current ? [{ id: profile.id, stream: voiceStream.current }] : []),
+      ...Object.entries(remoteStreams).map(([id, stream]) => ({ id, stream })),
+    ];
+    for (const item of streams) {
+      if (!item.stream.getAudioTracks().length) continue;
+      const analyser = context.createAnalyser();
+      analyser.fftSize = 256;
+      context.createMediaStreamSource(item.stream).connect(analyser);
+      analysers.push({ id: item.id, analyser, data: new Uint8Array(analyser.frequencyBinCount) });
+    }
+    let frame = 0;
+    let lastUpdate = 0;
+    const sample = (time: number) => {
+      if (time - lastUpdate > 110) {
+        const next = new Set<string>();
+        for (const item of analysers) {
+          item.analyser.getByteFrequencyData(item.data);
+          const average = item.data.reduce((sum, value) => sum + value, 0) / Math.max(1, item.data.length);
+          if (average > 13) next.add(item.id);
+        }
+        setSpeakingMembers(next);
+        lastUpdate = time;
+      }
+      frame = requestAnimationFrame(sample);
+    };
+    frame = requestAnimationFrame(sample);
+    return () => {
+      cancelAnimationFrame(frame);
+      void context.close();
+    };
+  }, [cameraEnabled, profile, remoteStreams, voiceConnected]);
+
+  useEffect(() => {
+    if (!voiceConnected) return;
+    async function measureQuality() {
+      let packetsLost = 0;
+      let packetsReceived = 0;
+      let roundTripMs = 0;
+      for (const connection of peerConnections.current.values()) {
+        const stats = await connection.getStats();
+        stats.forEach((report) => {
+          if (report.type === "inbound-rtp" && report.kind === "audio") {
+            packetsLost += Number(report.packetsLost || 0);
+            packetsReceived += Number(report.packetsReceived || 0);
+          }
+          if (report.type === "candidate-pair" && report.state === "succeeded") {
+            roundTripMs = Math.max(roundTripMs, Number(report.currentRoundTripTime || 0) * 1_000);
+          }
+        });
+      }
+      const loss = packetsLost / Math.max(1, packetsLost + packetsReceived);
+      setConnectionQuality(loss > 0.08 || roundTripMs > 450 ? "poor" : loss > 0.03 || roundTripMs > 220 ? "fair" : "good");
+    }
+    void measureQuality();
+    const timer = window.setInterval(() => void measureQuality(), 5_000);
+    return () => window.clearInterval(timer);
+  }, [voiceConnected, remoteStreams]);
+
+  useEffect(() => {
     if (!toast) return;
     const timer = window.setTimeout(() => setToast(null), 2800);
     return () => window.clearTimeout(timer);
@@ -1441,6 +1717,17 @@ export function KuzensApp() {
     if ("serviceWorker" in navigator) {
       navigator.serviceWorker.register("/sw.js").catch(() => undefined);
     }
+    const captureInstall = (event: Event) => {
+      event.preventDefault();
+      setInstallPrompt(event);
+    };
+    const installed = () => setInstallPrompt(null);
+    window.addEventListener("beforeinstallprompt", captureInstall);
+    window.addEventListener("appinstalled", installed);
+    return () => {
+      window.removeEventListener("beforeinstallprompt", captureInstall);
+      window.removeEventListener("appinstalled", installed);
+    };
   }, []);
 
   useEffect(() => {
@@ -1483,7 +1770,7 @@ export function KuzensApp() {
               Object.entries(saved)
                 .filter(([, value]) => typeof value === "number" && value >= 0 && value <= 1)
                 .slice(0, 200),
-            ),
+            ) as Record<string, number>,
           );
         }
       } catch {
@@ -1669,7 +1956,7 @@ export function KuzensApp() {
         event.type === "keydown" &&
         !typing
       ) {
-        const navigable = channels.filter((channel) => channel.kind === "text");
+        const navigable = channels.filter((channel) => channel.kind !== "voice");
         const currentIndex = Math.max(
           0,
           navigable.findIndex((channel) => channel.id === activeChannel),
@@ -1749,6 +2036,30 @@ export function KuzensApp() {
     }
   }, [activeServerId, connectedVoiceChannelId]);
 
+  const playSoundboardTone = useCallback((name: "pop" | "chime" | "spark", broadcast = true) => {
+    const context = new AudioContext();
+    const gain = context.createGain();
+    gain.gain.setValueAtTime(0.0001, context.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.14, context.currentTime + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + 0.42);
+    gain.connect(context.destination);
+    const frequencies = name === "pop" ? [240] : name === "chime" ? [440, 660] : [660, 880, 1100];
+    frequencies.forEach((frequency, index) => {
+      const oscillator = context.createOscillator();
+      oscillator.type = name === "pop" ? "sine" : "triangle";
+      oscillator.frequency.setValueAtTime(frequency, context.currentTime + index * 0.05);
+      oscillator.connect(gain);
+      oscillator.start(context.currentTime + index * 0.05);
+      oscillator.stop(context.currentTime + 0.4);
+    });
+    window.setTimeout(() => void context.close(), 700);
+    if (broadcast && profile && connectedVoiceChannelId) {
+      members
+        .filter((member) => member.voiceChannelId === connectedVoiceChannelId && member.id !== profile.id)
+        .forEach((member) => void sendRtcSignal(member.id, "sound", { name }).catch(() => undefined));
+    }
+  }, [connectedVoiceChannelId, members, profile, sendRtcSignal]);
+
   const closePeer = useCallback((profileId: string) => {
     peerConnections.current.get(profileId)?.close();
     peerConnections.current.delete(profileId);
@@ -1804,6 +2115,11 @@ export function KuzensApp() {
   }, [closePeer, negotiatePeer, sendRtcSignal]);
 
   const applyRtcSignal = useCallback(async (signal: RtcSignal) => {
+    if (signal.type === "sound") {
+      const sound = JSON.parse(signal.payload) as { name?: "pop" | "chime" | "spark" };
+      if (sound.name && ["pop", "chime", "spark"].includes(sound.name)) playSoundboardTone(sound.name, false);
+      return;
+    }
     const payload = JSON.parse(signal.payload) as
       | RTCSessionDescriptionInit
       | RTCIceCandidateInit;
@@ -1836,7 +2152,7 @@ export function KuzensApp() {
       queued.push(candidate);
       pendingIce.current.set(signal.senderProfileId, queued.slice(-50));
     }
-  }, [getOrCreatePeer, sendRtcSignal]);
+  }, [getOrCreatePeer, playSoundboardTone, sendRtcSignal]);
 
   useEffect(() => {
     if (!voiceConnected || !profile || !connectedVoiceChannelId) {
@@ -1870,7 +2186,7 @@ export function KuzensApp() {
     async function pollSignals() {
       const query = new URLSearchParams({
         server: activeServerId,
-        channel: connectedVoiceChannelId,
+        channel: connectedVoiceChannelId!,
         after: rtcSyncAt.current,
       });
       const response = await apiFetch(`/api/rtc?${query.toString()}`);
@@ -1909,6 +2225,7 @@ export function KuzensApp() {
     displayStream.current = null;
     if (previewVideo.current) previewVideo.current.srcObject = null;
     setSharing(false);
+    setCameraEnabled(false);
     setPttPressed(false);
     peerConnections.current.forEach((_, profileId) => closePeer(profileId));
     setVoiceConnected(false);
@@ -2101,10 +2418,47 @@ export function KuzensApp() {
     }
   }
 
+  async function toggleCamera() {
+    if (!voiceConnected) {
+      setToast({ text: "Önce ses odasına katılmalısın.", tone: "danger" });
+      return;
+    }
+    if (cameraEnabled) {
+      const videoTracks = voiceStream.current?.getVideoTracks() || [];
+      for (const track of videoTracks) {
+        for (const connection of peerConnections.current.values()) {
+          const sender = connection.getSenders().find((item) => item.track?.id === track.id);
+          if (sender) await sender.replaceTrack(null);
+        }
+        voiceStream.current?.removeTrack(track);
+        track.stop();
+      }
+      setCameraEnabled(false);
+      return;
+    }
+    try {
+      const camera = await navigator.mediaDevices.getUserMedia({
+        video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30, max: 30 } },
+      });
+      const track = camera.getVideoTracks()[0];
+      if (!track || !voiceStream.current) throw new Error("Kamera açılamadı.");
+      voiceStream.current.addTrack(track);
+      for (const connection of peerConnections.current.values()) {
+        connection.addTrack(track, voiceStream.current);
+      }
+      track.addEventListener("ended", () => setCameraEnabled(false));
+      setCameraEnabled(true);
+      setToast({ text: "Kamera açıldı.", tone: "success" });
+    } catch (error) {
+      setToast({ text: error instanceof Error ? error.message : "Kamera açılamadı.", tone: "danger" });
+    }
+  }
+
   async function sendMessage(event: FormEvent) {
     event.preventDefault();
-    const content = draft.trim();
-    if (!content || selected?.kind !== "text") return;
+    const files = pendingAttachments.slice(0, 4);
+    const content = draft.trim() || `📎 ${files.map((file) => file.name).join(", ")}`;
+    if ((!content && pendingAttachments.length === 0) || selected?.kind === "voice") return;
 
     const optimistic: ChatMessage = {
       id: `local-${Date.now()}`,
@@ -2132,9 +2486,48 @@ export function KuzensApp() {
       });
       if (!response.ok) throw new Error(await responseError(response, "Mesaj gönderilemedi."));
       const data = (await response.json()) as { message: ChatMessage };
+      if (selected?.kind === "forum") {
+        const threadResponse = await apiFetch("/api/threads", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            action: "create",
+            serverId: activeServerId,
+            channelId: activeChannel,
+            parentMessageId: data.message.id,
+            title: content.split("\n")[0].replace(/[*_~`|]/g, "").slice(0, 80),
+          }),
+        });
+        if (threadResponse.ok) {
+          const threadData = (await threadResponse.json()) as { thread: ThreadSummary };
+          data.message.thread = { ...threadData.thread, replyCount: 0 };
+        }
+      }
+      const uploadedAttachments: MessageAttachment[] = [];
+      for (const file of files) {
+        const uploadResponse = await apiFetch("/api/attachments", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            serverId: activeServerId,
+            channelId: activeChannel,
+            messageId: data.message.id,
+            fileName: file.name,
+            contentType: file.type || "application/octet-stream",
+            dataUrl: await fileAsDataUrl(file),
+          }),
+        });
+        if (!uploadResponse.ok) {
+          throw new Error(await responseError(uploadResponse, `${file.name} yüklenemedi.`));
+        }
+        const uploaded = (await uploadResponse.json()) as { attachment: MessageAttachment };
+        uploadedAttachments.push(uploaded.attachment);
+      }
+      data.message.attachments = uploadedAttachments;
       setMessages((current) =>
         current.map((message) => (message.id === optimistic.id ? data.message : message)),
       );
+      setPendingAttachments([]);
       if (guideServerId === activeServerId && !guideCompletedSteps.includes("hello")) {
         void completeGuideStep("hello");
       }
@@ -2147,8 +2540,43 @@ export function KuzensApp() {
     }
   }
 
+  function selectAttachments(event: ChangeEvent<HTMLInputElement>) {
+    const allowed = new Set([
+      "image/webp", "image/png", "image/jpeg", "image/gif",
+      "audio/webm", "audio/ogg", "audio/mpeg", "audio/wav",
+      "video/webm", "application/pdf", "text/plain",
+    ]);
+    const files = Array.from(event.target.files || []).slice(0, 4);
+    const invalid = files.find((file) => !allowed.has(file.type) || file.size > 4_000_000);
+    event.target.value = "";
+    if (invalid) {
+      setToast({ text: `${invalid.name}: desteklenmeyen tür veya 4 MB sınırı aşıldı.`, tone: "danger" });
+      return;
+    }
+    setPendingAttachments(files);
+  }
+
+  async function sendVoiceText(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const content = voiceTextDraft.trim();
+    if (!content || selected?.kind !== "voice") return;
+    setVoiceTextDraft("");
+    const response = await apiFetch("/api/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ serverId: activeServerId, channelId: selected.id, content }),
+    });
+    if (!response.ok) {
+      setVoiceTextDraft(content);
+      setToast({ text: await responseError(response, "Ses odası sohbetine yazılamadı."), tone: "danger" });
+      return;
+    }
+    const data = (await response.json()) as { message: ChatMessage };
+    setMessages((current) => mergeMessages(current, [data.message]));
+  }
+
   async function reloadCurrentMessages() {
-    if (selected?.kind !== "text") return;
+    if (selected?.kind === "voice") return;
     const query = new URLSearchParams({
       channel: activeChannel,
       server: activeServerId,
@@ -2165,7 +2593,7 @@ export function KuzensApp() {
   async function createPoll(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const options = pollOptionDrafts.map((option) => option.trim()).filter(Boolean);
-    if (selected?.kind !== "text" || options.length < 2) return;
+    if (selected?.kind === "voice" || options.length < 2) return;
     setPollCreating(true);
     try {
       const response = await apiFetch("/api/polls", {
@@ -2381,10 +2809,32 @@ export function KuzensApp() {
     });
   }
 
+  function startLongPress(
+    event: ReactTouchEvent,
+    item: Omit<ContextMenuState, "x" | "y">,
+  ) {
+    if (longPressTimer.current) clearTimeout(longPressTimer.current);
+    const touch = event.touches[0];
+    if (!touch) return;
+    longPressTimer.current = setTimeout(() => {
+      navigator.vibrate?.(25);
+      setContextMenu({
+        ...item,
+        x: Math.min(touch.clientX, window.innerWidth - 230),
+        y: Math.min(touch.clientY, window.innerHeight - 360),
+      });
+    }, 520);
+  }
+
+  function cancelLongPress() {
+    if (longPressTimer.current) clearTimeout(longPressTimer.current);
+    longPressTimer.current = null;
+  }
+
   function insertMention(tag: string) {
     setDraft((current) => {
-      if (/(?:^|\s)@[a-z0-9_]*$/i.test(current)) {
-        return `${current.replace(/@[a-z0-9_]*$/i, tag)} `;
+      if (/(?:^|\s)@[a-z0-9_ğüşöçı-]*$/i.test(current)) {
+        return `${current.replace(/@[a-z0-9_ğüşöçı-]*$/i, tag)} `;
       }
       return `${current}${current && !current.endsWith(" ") ? " " : ""}${tag} `;
     });
@@ -2458,6 +2908,64 @@ export function KuzensApp() {
     setToast({ text: "Mesaj bağlantısı kopyalandı.", tone: "success" });
   }
 
+  async function reportContent(targetType: "message" | "profile", targetId: string) {
+    const reason = window.prompt("Bildirim nedeni (spam, taciz, uygunsuz içerik…)")?.trim();
+    if (!reason) return;
+    const details = window.prompt("İstersen ek ayrıntı yazabilirsin:")?.trim() || "";
+    const response = await apiFetch("/api/reports", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ serverId: activeServerId, targetType, targetId, reason, details }),
+    });
+    setToast({
+      text: response.ok ? "Bildirimin güvenli biçimde moderasyon kuyruğuna alındı." : await responseError(response, "Bildirim gönderilemedi."),
+      tone: response.ok ? "success" : "danger",
+    });
+  }
+
+  async function forwardMessage(message: ChatMessage) {
+    const channelName = window.prompt("Mesajı hangi kanala iletelim? Kanal adını yaz:")?.trim().replace(/^#/, "");
+    if (!channelName) return;
+    const target = channels.find((channel) => channel.kind !== "voice" && channel.name.toLocaleLowerCase("tr-TR") === channelName.toLocaleLowerCase("tr-TR"));
+    if (!target) {
+      setToast({ text: "Bu isimde bir metin kanalı bulunamadı.", tone: "danger" });
+      return;
+    }
+    const response = await apiFetch("/api/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ serverId: activeServerId, channelId: target.id, content: `↪ **${message.authorName} tarafından iletildi**\n${message.content}` }),
+    });
+    setToast({ text: response.ok ? `Mesaj #${target.name} kanalına iletildi.` : await responseError(response, "Mesaj iletilemedi."), tone: response.ok ? "success" : "danger" });
+  }
+
+  async function memberControl(member: Member, action: "timeout" | "serverMute" | "serverDeafen" | "voiceDisconnect" | "nickname") {
+    const payload: Record<string, unknown> = { serverId: activeServerId, profileId: member.id, action };
+    if (action === "timeout") {
+      const minutes = Number(window.prompt("Timeout süresi (dakika, kaldırmak için 0)", "10"));
+      if (!Number.isInteger(minutes) || minutes < 0) return;
+      payload.durationMinutes = minutes;
+    } else if (action === "nickname") {
+      const nickname = window.prompt("Sunucuya özel takma ad (temizlemek için boş bırak)", member.name);
+      if (nickname === null) return;
+      payload.nickname = nickname;
+    } else if (action === "serverMute") payload.enabled = !member.serverMuted;
+    else if (action === "serverDeafen") payload.enabled = !member.serverDeafened;
+    const response = await apiFetch("/api/members", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) });
+    if (!response.ok) {
+      setToast({ text: await responseError(response, "Üye ayarı değiştirilemedi."), tone: "danger" });
+      return;
+    }
+    setMembers((current) => current.map((item) => item.id === member.id ? {
+      ...item,
+      name: action === "nickname" ? String(payload.nickname || item.displayName || item.name) : item.name,
+      serverMuted: action === "serverMute" ? Boolean(payload.enabled) : item.serverMuted,
+      serverDeafened: action === "serverDeafen" ? Boolean(payload.enabled) : item.serverDeafened,
+      voiceChannelId: action === "voiceDisconnect" || action === "timeout" ? null : item.voiceChannelId,
+    } : item));
+    setToast({ text: "Üye ayarı güncellendi.", tone: "success" });
+  }
+
   async function requestFriend(member: Member) {
     const response = await apiFetch("/api/friends", {
       method: "POST",
@@ -2480,8 +2988,11 @@ export function KuzensApp() {
     setChannelBitrate(channel.bitrate || 64_000);
     setChannelUserLimit(channel.userLimit || 0);
     setChannelRegion(channel.region || "auto");
+    setChannelCategoryId(channel.categoryId || "");
+    setChannelHistoryMode(channel.historyMode || "all");
     setChannelPermissionRoles([]);
     setChannelPermissionOverwrites([]);
+    setChannelMemberPermissionOverwrites([]);
     setContextMenu(null);
     setModal("channelSettings");
     setChannelPermissionsLoading(true);
@@ -2497,9 +3008,11 @@ export function KuzensApp() {
       const data = (await response.json()) as {
         roles?: Role[];
         overwrites?: ChannelPermissionOverwrite[];
+        memberOverwrites?: ChannelMemberPermissionOverwrite[];
       };
       setChannelPermissionRoles(data.roles || []);
       setChannelPermissionOverwrites(data.overwrites || []);
+      setChannelMemberPermissionOverwrites(data.memberOverwrites || []);
     } catch (error) {
       setToast({
         text:
@@ -2538,8 +3051,31 @@ export function KuzensApp() {
     });
   }
 
+  function setChannelMemberPermission(
+    profileId: string,
+    bit: number,
+    state: "inherit" | "allow" | "deny",
+  ) {
+    setChannelMemberPermissionOverwrites((current) => {
+      const existing = current.find((item) => item.profileId === profileId) || {
+        channelId: activeChannel,
+        profileId,
+        allowPermissions: 0,
+        denyPermissions: 0,
+      };
+      let allowPermissions = existing.allowPermissions & ~bit;
+      let denyPermissions = existing.denyPermissions & ~bit;
+      if (state === "allow") allowPermissions |= bit;
+      if (state === "deny") denyPermissions |= bit;
+      const next = { ...existing, allowPermissions, denyPermissions };
+      return current.some((item) => item.profileId === profileId)
+        ? current.map((item) => item.profileId === profileId ? next : item)
+        : [...current, next];
+    });
+  }
+
   function openChannelNotifications(channel: Channel) {
-    if (channel.kind !== "text") {
+    if (channel.kind === "voice") {
       setToast({ text: "Ses odalarında yalnızca canlı bağlantı bildirimleri kullanılır." });
       return;
     }
@@ -2587,7 +3123,7 @@ export function KuzensApp() {
   }
 
   async function markChannelRead(channel: Channel) {
-    if (channel.kind !== "text") return;
+    if (channel.kind === "voice") return;
     setChannels((current) =>
       current.map((item) =>
         item.id === channel.id ? { ...item, unreadCount: 0, mentionCount: 0 } : item,
@@ -2622,6 +3158,35 @@ export function KuzensApp() {
     } finally {
       setAuditLoading(false);
     }
+  }
+
+  async function openReports() {
+    setContextMenu(null);
+    setModal("reports");
+    setReportsLoading(true);
+    try {
+      const response = await apiFetch(`/api/reports?server=${encodeURIComponent(activeServerId)}`);
+      if (!response.ok) throw new Error(await responseError(response, "Bildirim kuyruğu yüklenemedi."));
+      const data = (await response.json()) as { reports?: ContentReport[] };
+      setContentReports(data.reports || []);
+    } catch (error) {
+      setToast({ text: error instanceof Error ? error.message : "Bildirim kuyruğu yüklenemedi.", tone: "danger" });
+    } finally {
+      setReportsLoading(false);
+    }
+  }
+
+  async function reviewReport(report: ContentReport, status: "reviewed" | "closed") {
+    const response = await apiFetch("/api/reports", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ serverId: activeServerId, id: report.id, status }),
+    });
+    if (!response.ok) {
+      setToast({ text: await responseError(response, "Bildirim güncellenemedi."), tone: "danger" });
+      return;
+    }
+    setContentReports((current) => current.map((item) => item.id === report.id ? { ...item, status } : item));
   }
 
   const loadEvents = useCallback(async () => {
@@ -2971,6 +3536,8 @@ export function KuzensApp() {
         bitrate: channelBitrate,
         userLimit: channelUserLimit,
         region: channelRegion,
+        categoryId: channelCategoryId || null,
+        historyMode: channelHistoryMode,
       }),
     });
     if (!response.ok) {
@@ -2986,6 +3553,11 @@ export function KuzensApp() {
         channelId: selected.id,
         overwrites: channelPermissionOverwrites.map((overwrite) => ({
           roleId: overwrite.roleId,
+          allowPermissions: overwrite.allowPermissions,
+          denyPermissions: overwrite.denyPermissions,
+        })),
+        memberOverwrites: channelMemberPermissionOverwrites.map((overwrite) => ({
+          profileId: overwrite.profileId,
           allowPermissions: overwrite.allowPermissions,
           denyPermissions: overwrite.denyPermissions,
         })),
@@ -3015,6 +3587,8 @@ export function KuzensApp() {
       body: JSON.stringify({
         name: `${channel.name}-kopya`.slice(0, 32),
         kind: channel.kind,
+        categoryId: channel.categoryId || null,
+        historyMode: channel.historyMode || "all",
         serverId: activeServerId,
       }),
     });
@@ -3031,7 +3605,41 @@ export function KuzensApp() {
     const response = await apiFetch("/api/notifications");
     if (!response.ok) return;
     const data = (await response.json()) as { notifications?: MentionNotification[] };
-    setNotifications(data.notifications || []);
+    const next = data.notifications || [];
+    if (knownNotificationIds.current && "Notification" in window && Notification.permission === "granted" && document.visibilityState !== "visible") {
+      for (const notification of next.filter((item) => !knownNotificationIds.current!.has(item.id)).slice(0, 3)) {
+        new Notification(`${notification.authorName} · #${notification.channelName}`, {
+          body: notification.content.slice(0, 160),
+          icon: "/favicon.svg",
+          tag: notification.id,
+        });
+      }
+    }
+    knownNotificationIds.current = new Set(next.map((item) => item.id));
+    setNotifications(next);
+  }
+
+  async function enableBrowserNotifications() {
+    if (!("Notification" in window)) {
+      setToast({ text: "Bu tarayıcı masaüstü bildirimlerini desteklemiyor.", tone: "danger" });
+      return;
+    }
+    const permission = await Notification.requestPermission();
+    setToast({
+      text: permission === "granted" ? "Masaüstü bildirimleri açıldı." : "Bildirim izni verilmedi.",
+      tone: permission === "granted" ? "success" : "danger",
+    });
+  }
+
+  async function installKuzens() {
+    const promptEvent = installPrompt as Event & { prompt?: () => Promise<void>; userChoice?: Promise<{ outcome: string }> };
+    if (!promptEvent.prompt) {
+      setToast({ text: "Tarayıcı menüsündeki ‘Uygulamayı yükle’ seçeneğini kullanabilirsin." });
+      return;
+    }
+    await promptEvent.prompt();
+    await promptEvent.userChoice;
+    setInstallPrompt(null);
   }
 
   async function openNotification(notification: MentionNotification) {
@@ -3064,6 +3672,12 @@ export function KuzensApp() {
     setProfileAvatarPreview(profile.avatarUrl || null);
     setProfileAvatarDataUrl(null);
     setProfileRemoveAvatar(false);
+    setProfileBannerPreview(profile.bannerUrl || null);
+    setProfileBannerDataUrl(null);
+    setProfileRemoveBanner(false);
+    setProfileColor(profile.profileColor || "#8b5cf6");
+    setProfileStatusDuration("0");
+    setProfileAllowFriendRequests(profile.allowFriendRequests !== false);
     setModal("profile");
   }
 
@@ -3113,6 +3727,39 @@ export function KuzensApp() {
       setProfileRemoveAvatar(false);
     } catch {
       setToast({ text: "Fotoğraf işlenemedi. Başka bir görsel dene.", tone: "danger" });
+    }
+  }
+
+  async function selectProfileBanner(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    if (!["image/png", "image/jpeg", "image/webp"].includes(file.type) || file.size > 8_000_000) {
+      setToast({ text: "Kapak görseli PNG, JPEG veya WebP ve en fazla 8 MB olmalı.", tone: "danger" });
+      return;
+    }
+    try {
+      const bitmap = await createImageBitmap(file);
+      const targetRatio = 3;
+      const sourceRatio = bitmap.width / bitmap.height;
+      const sourceWidth = sourceRatio > targetRatio ? bitmap.height * targetRatio : bitmap.width;
+      const sourceHeight = sourceRatio > targetRatio ? bitmap.height : bitmap.width / targetRatio;
+      const canvas = document.createElement("canvas");
+      canvas.width = 900;
+      canvas.height = 300;
+      const context = canvas.getContext("2d");
+      if (!context) throw new Error("canvas");
+      context.drawImage(bitmap, (bitmap.width - sourceWidth) / 2, (bitmap.height - sourceHeight) / 2, sourceWidth, sourceHeight, 0, 0, 900, 300);
+      bitmap.close();
+      const blob = await new Promise<Blob>((resolve, reject) =>
+        canvas.toBlob((value) => value ? resolve(value) : reject(new Error("image")), "image/webp", 0.82),
+      );
+      const dataUrl = await fileAsDataUrl(new File([blob], "banner.webp", { type: "image/webp" }));
+      setProfileBannerPreview(dataUrl);
+      setProfileBannerDataUrl(dataUrl);
+      setProfileRemoveBanner(false);
+    } catch {
+      setToast({ text: "Kapak görseli işlenemedi.", tone: "danger" });
     }
   }
 
@@ -3182,6 +3829,14 @@ export function KuzensApp() {
           presenceStatus: profilePresence,
           avatarDataUrl: profileAvatarDataUrl || undefined,
           removeAvatar: profileRemoveAvatar,
+          bannerDataUrl: profileBannerDataUrl || undefined,
+          removeBanner: profileRemoveBanner,
+          profileColor,
+          statusExpiresAt:
+            Number(profileStatusDuration) > 0
+              ? new Date(Date.now() + Number(profileStatusDuration) * 60_000).toISOString()
+              : null,
+          allowFriendRequests: profileAllowFriendRequests,
         }),
       });
       if (!response.ok) {
@@ -3199,6 +3854,54 @@ export function KuzensApp() {
     } finally {
       setProfileSaving(false);
     }
+  }
+
+  async function uploadCustomEmoji(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    const suggested = file.name.replace(/\.[^.]+$/, "").toLocaleLowerCase("en-US").replace(/[^a-z0-9_]/g, "_").slice(0, 24);
+    const name = window.prompt("Emoji adı", suggested)?.trim().toLocaleLowerCase("en-US").replace(/[^a-z0-9_]/g, "");
+    if (!name) return;
+    if (file.size > 300_000) {
+      setToast({ text: "Özel emoji en fazla 300 KB olabilir.", tone: "danger" });
+      return;
+    }
+    const response = await apiFetch("/api/emojis", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ serverId: activeServerId, name, dataUrl: await fileAsDataUrl(file) }),
+    });
+    if (!response.ok) {
+      setToast({ text: await responseError(response, "Emoji yüklenemedi."), tone: "danger" });
+      return;
+    }
+    const data = (await response.json()) as { emoji: CustomEmoji };
+    setCustomEmojis((current) => [...current, data.emoji].sort((a, b) => a.name.localeCompare(b.name)));
+    setToast({ text: `:${data.emoji.name}: emojisi eklendi.`, tone: "success" });
+  }
+
+  async function deleteCustomEmoji(emoji: CustomEmoji) {
+    const response = await apiFetch("/api/emojis", {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ serverId: activeServerId, id: emoji.id }),
+    });
+    if (!response.ok) {
+      setToast({ text: await responseError(response, "Emoji silinemedi."), tone: "danger" });
+      return;
+    }
+    setCustomEmojis((current) => current.filter((item) => item.id !== emoji.id));
+  }
+
+  function insertCustomEmoji() {
+    if (!customEmojis.length) {
+      setDraft((current) => `${current}${current ? " " : ""}😊`);
+      return;
+    }
+    const name = window.prompt(`Emoji adı:\n${customEmojis.map((emoji) => `:${emoji.name}:`).join("  ")}`)?.trim().replaceAll(":", "").toLocaleLowerCase("en-US");
+    const emoji = customEmojis.find((item) => item.name === name);
+    if (emoji) setDraft((current) => `${current}${current && !current.endsWith(" ") ? " " : ""}:${emoji.name}: `);
   }
 
   async function deleteAccount(event: FormEvent<HTMLFormElement>) {
@@ -3248,18 +3951,25 @@ export function KuzensApp() {
       serverId: activeServerId,
       name,
       kind: newChannelKind,
+      categoryId: newChannelCategoryId || null,
       position: channels.length,
     };
     setChannels((current) => [...current, optimistic]);
     setModal(null);
     setNewChannelName("");
+    setNewChannelCategoryId("");
     setActiveChannel(optimistic.id);
 
     try {
       const response = await apiFetch("/api/channels", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ name, kind: newChannelKind, serverId: activeServerId }),
+        body: JSON.stringify({
+          name,
+          kind: newChannelKind,
+          categoryId: newChannelCategoryId || null,
+          serverId: activeServerId,
+        }),
       });
       if (!response.ok) throw new Error(await responseError(response, "Oda oluşturulamadı."));
       const data = (await response.json()) as { channel: Channel };
@@ -3297,6 +4007,120 @@ export function KuzensApp() {
       channels.find((item) => item.id !== channel.id)?.id || "genel",
     );
     setToast({ text: "Oda silindi.", tone: "success" });
+  }
+
+  function openCategoryEditor(category?: ChannelCategory) {
+    setEditingCategory(category || null);
+    setNewCategoryName(category?.name || "");
+    setContextMenu(null);
+    setModal("category");
+  }
+
+  async function saveCategory(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const name = newCategoryName.trim();
+    if (!name) return;
+    const response = await apiFetch("/api/categories", {
+      method: editingCategory ? "PATCH" : "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        id: editingCategory?.id,
+        serverId: activeServerId,
+        name,
+      }),
+    });
+    if (!response.ok) {
+      setToast({ text: await responseError(response, "Kategori kaydedilemedi."), tone: "danger" });
+      return;
+    }
+    const data = (await response.json()) as { category: ChannelCategory };
+    setCategories((current) =>
+      editingCategory
+        ? current.map((item) => item.id === data.category.id ? data.category : item)
+        : [...current, data.category],
+    );
+    setNewCategoryName("");
+    setEditingCategory(null);
+    setModal(null);
+    setToast({ text: editingCategory ? "Kategori güncellendi." : "Kategori oluşturuldu.", tone: "success" });
+  }
+
+  async function deleteCategory(category: ChannelCategory) {
+    if (!canManageChannels || !window.confirm(`${category.name} kategorisi silinsin mi? Odalar silinmez.`)) return;
+    const response = await apiFetch("/api/categories", {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id: category.id, serverId: activeServerId }),
+    });
+    if (!response.ok) {
+      setToast({ text: await responseError(response, "Kategori silinemedi."), tone: "danger" });
+      return;
+    }
+    setCategories((current) => current.filter((item) => item.id !== category.id));
+    setChannels((current) => current.map((channel) => channel.categoryId === category.id ? { ...channel, categoryId: null } : channel));
+    setContextMenu(null);
+  }
+
+  async function syncCategoryPermissions(category: ChannelCategory) {
+    const categoryChannels = channels.filter((channel) => channel.categoryId === category.id);
+    if (!categoryChannels.length) {
+      setToast({ text: "Bu kategoride izin kopyalanacak oda yok." });
+      return;
+    }
+    const sourceName = window.prompt(`İzinleri kaynak alacağımız oda adı:`, categoryChannels[0].name)?.replace(/^#/, "").trim();
+    const source = categoryChannels.find((channel) => channel.name.toLocaleLowerCase("tr-TR") === sourceName?.toLocaleLowerCase("tr-TR"));
+    if (!source) return;
+    const response = await apiFetch("/api/categories", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ serverId: activeServerId, id: category.id, sourceChannelId: source.id }),
+    });
+    setToast({ text: response.ok ? `${category.name} izinleri #${source.name} odasıyla eşitlendi.` : await responseError(response, "Kategori izinleri eşitlenemedi."), tone: response.ok ? "success" : "danger" });
+    setContextMenu(null);
+  }
+
+  async function reorderChannelTo(sourceId: string, targetId: string) {
+    if (!canManageChannels || sourceId === targetId) return;
+    const ordered = [...channels].sort((a, b) => a.position - b.position);
+    const sourceIndex = ordered.findIndex((item) => item.id === sourceId);
+    const targetIndex = ordered.findIndex((item) => item.id === targetId);
+    if (sourceIndex < 0 || targetIndex < 0) return;
+    const [source] = ordered.splice(sourceIndex, 1);
+    ordered.splice(targetIndex, 0, source);
+    setChannels(ordered.map((item, position) => ({ ...item, position })));
+    const response = await apiFetch("/api/channels", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "reorder", serverId: activeServerId, orderedIds: ordered.map((item) => item.id) }),
+    });
+    if (!response.ok) setToast({ text: await responseError(response, "Oda sırası kaydedilemedi."), tone: "danger" });
+  }
+
+  async function moveChannelToCategory(channelId: string, categoryId: string | null) {
+    if (!canManageChannels) return;
+    const channel = channels.find((item) => item.id === channelId);
+    if (!channel || channel.categoryId === categoryId) return;
+    setChannels((current) => current.map((item) => item.id === channelId ? { ...item, categoryId } : item));
+    const response = await apiFetch("/api/channels", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        id: channel.id,
+        serverId: activeServerId,
+        name: channel.name,
+        topic: channel.topic || "",
+        slowModeSeconds: channel.slowModeSeconds || 0,
+        bitrate: channel.bitrate || 64_000,
+        userLimit: channel.userLimit || 0,
+        region: channel.region || "auto",
+        categoryId,
+        historyMode: channel.historyMode || "all",
+      }),
+    });
+    if (!response.ok) {
+      setChannels((current) => current.map((item) => item.id === channelId ? channel : item));
+      setToast({ text: await responseError(response, "Oda kategoriye taşınamadı."), tone: "danger" });
+    }
   }
 
   async function registerProfile(event: FormEvent<HTMLFormElement>) {
@@ -3557,6 +4381,34 @@ export function KuzensApp() {
     setModal("directMessages");
   }
 
+  async function createGroupDirect(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const selectedFriends = friendItems.filter(
+      (item) => item.status === "accepted" && groupDirectMembers.has(item.profile.id),
+    );
+    if (selectedFriends.length < 2) return;
+    const response = await apiFetch("/api/direct-messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        action: "group",
+        name: groupDirectName.trim() || undefined,
+        usernames: selectedFriends.map((item) => item.profile.tag),
+      }),
+    });
+    if (!response.ok) {
+      setToast({ text: await responseError(response, "Grup konuşması oluşturulamadı."), tone: "danger" });
+      return;
+    }
+    const data = (await response.json()) as { conversation: DirectConversation };
+    setDirectConversations((current) => [data.conversation, ...current]);
+    setActiveDirectConversationId(data.conversation.id);
+    setDirectMessages([]);
+    setGroupDirectMembers(new Set());
+    setGroupDirectName("");
+    setModal("directMessages");
+  }
+
   async function respondDirectRequest(
     conversation: DirectConversation,
     requestResponse: "accept" | "ignore",
@@ -3657,6 +4509,62 @@ export function KuzensApp() {
           : item,
       ),
     );
+  }
+
+  async function pinDirectMessage(message: DirectMessage) {
+    const pinned = !message.pinned;
+    const response = await apiFetch("/api/direct-messages", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "pin", messageId: message.id, pinned }),
+    });
+    if (!response.ok) {
+      setToast({ text: await responseError(response, "Mesaj sabitlenemedi."), tone: "danger" });
+      return;
+    }
+    setDirectMessages((current) =>
+      current.map((item) => (item.id === message.id ? { ...item, pinned } : item)),
+    );
+    setToast({ text: pinned ? "Mesaj sabitlendi." : "Mesaj sabitlemeden kaldırıldı.", tone: "success" });
+  }
+
+  async function updateDirectConversationSettings(options: {
+    pinned?: boolean;
+    mutedMinutes?: number;
+  }) {
+    if (!activeDirectConversation) return;
+    const pinned = options.pinned ?? Boolean(activeDirectConversation.pinned);
+    const mutedMinutes = options.mutedMinutes ?? (
+      activeDirectConversation.mutedUntil &&
+      new Date(activeDirectConversation.mutedUntil).getTime() > Date.now()
+        ? Math.ceil((new Date(activeDirectConversation.mutedUntil).getTime() - Date.now()) / 60_000)
+        : 0
+    );
+    const response = await apiFetch("/api/direct-messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        action: "settings",
+        conversationId: activeDirectConversation.id,
+        pinned,
+        mutedMinutes,
+      }),
+    });
+    if (!response.ok) {
+      setToast({ text: await responseError(response, "Konuşma ayarı kaydedilemedi."), tone: "danger" });
+      return;
+    }
+    const data = (await response.json()) as { pinned: boolean; mutedUntil: string | null };
+    setDirectConversations((current) =>
+      current
+        .map((conversation) =>
+          conversation.id === activeDirectConversation.id
+            ? { ...conversation, pinned: data.pinned, mutedUntil: data.mutedUntil }
+            : conversation,
+        )
+        .sort((left, right) => Number(Boolean(right.pinned)) - Number(Boolean(left.pinned))),
+    );
+    setToast({ text: "Konuşma ayarı güncellendi.", tone: "success" });
   }
 
   async function updateDirectPrivacy(value: "friends" | "shared_servers" | "none") {
@@ -4098,6 +5006,76 @@ export function KuzensApp() {
     setToast({ text: `#${channel.name} ${direction < 0 ? "yukarı" : "aşağı"} taşındı.`, tone: "success" });
   }
 
+  function channelSymbol(channel: Channel) {
+    if (channel.kind === "voice") return "◖";
+    if (channel.kind === "forum") return "▤";
+    if (channel.kind === "announcement") return "◉";
+    return "#";
+  }
+
+  function sidebarChannel(channel: Channel) {
+    const participants = members.filter((member) => member.voiceChannelId === channel.id);
+    return (
+      <div
+        key={channel.id}
+        className="draggable-channel"
+        draggable={canManageChannels}
+        onDragStart={(event) => event.dataTransfer.setData("text/kuzens-channel", channel.id)}
+        onDragOver={(event) => canManageChannels && event.preventDefault()}
+        onDrop={(event) => {
+          event.preventDefault();
+          const sourceId = event.dataTransfer.getData("text/kuzens-channel");
+          if (sourceId) void reorderChannelTo(sourceId, channel.id);
+        }}
+      >
+        <button
+          className={`channel-row ${activeChannel === channel.id ? "active" : ""} ${channel.unreadCount && channel.showUnread && channel.notificationLevel !== "none" ? "unread" : ""}`}
+          onClick={() => chooseChannel(channel)}
+          onContextMenu={(event) => openContextMenu(event, { kind: "channel", channel })}
+          onTouchStart={(event) => startLongPress(event, { kind: "channel", channel })}
+          onTouchEnd={cancelLongPress}
+          onTouchMove={cancelLongPress}
+        >
+          <span className="channel-symbol">{channelSymbol(channel)}</span>
+          <span>{channel.name}</span>
+          {channel.kind === "forum" && <small className="channel-kind-chip">FORUM</small>}
+          {channel.kind === "announcement" && <small className="channel-kind-chip">DUYURU</small>}
+          {channel.kind === "voice" && participants.length > 0 && <em className="live-dot">{participants.length}</em>}
+          {channel.kind !== "voice" && Boolean(channel.mentionCount && channel.notificationLevel !== "none") && (
+            <em className="mention-badge">{Math.min(99, channel.mentionCount || 0)}</em>
+          )}
+          {channel.kind !== "voice" && !channel.mentionCount && Boolean(channel.unreadCount && channel.showUnread && channel.notificationLevel !== "none") && (
+            <i className={`unread-dot ${channel.notificationLevel}`} />
+          )}
+        </button>
+        {channel.kind === "voice" && participants.length > 0 && (
+          <div className="voice-members">
+            {participants.map((member) => (
+              <span
+                key={member.id}
+                role="button"
+                tabIndex={0}
+                onClick={() => openMemberProfile(member)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") openMemberProfile(member);
+                }}
+                onContextMenu={(event) => openContextMenu(event, { kind: "member", member })}
+                onTouchStart={(event) => startLongPress(event, { kind: "member", member })}
+                onTouchEnd={cancelLongPress}
+                onTouchMove={cancelLongPress}
+              >
+                <Avatar name={member.name} size="sm" tone={toneFor(member.id)} imageUrl={member.avatarUrl} />
+                {member.name}
+                {member.serverMuted && <i title="Sunucu tarafından susturuldu">MUTE</i>}
+                {member.sharing && <i>YAYIN</i>}
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
   return (
     <main
       className={`app-shell app-shell-v3 font-${preferences.fontSize} density-${preferences.density} ${preferences.highContrast ? "high-contrast" : ""} ${preferences.reducedMotion ? "reduce-motion" : ""}`}
@@ -4215,6 +5193,57 @@ export function KuzensApp() {
               ))}
             </div>
           )}
+          {categories
+            .slice()
+            .sort((a, b) => a.position - b.position)
+            .map((category) => {
+              const categoryChannels = channels
+                .filter((channel) => channel.categoryId === category.id)
+                .sort((a, b) => a.position - b.position);
+              const collapsed = collapsedCategories.has(category.id);
+              return (
+                <div
+                  className="channel-section category-section"
+                  key={category.id}
+                  onDragOver={(event) => canManageChannels && event.preventDefault()}
+                  onDrop={(event) => {
+                    event.preventDefault();
+                    const channelId = event.dataTransfer.getData("text/kuzens-channel");
+                    if (channelId) void moveChannelToCategory(channelId, category.id);
+                  }}
+                >
+                  <div
+                    className="section-label category-label"
+                    onContextMenu={(event) => openContextMenu(event, { kind: "category", category })}
+                    onTouchStart={(event) => startLongPress(event, { kind: "category", category })}
+                    onTouchEnd={cancelLongPress}
+                    onTouchMove={cancelLongPress}
+                  >
+                    <button
+                      className="category-toggle"
+                      onClick={() => setCollapsedCategories((current) => {
+                        const next = new Set(current);
+                        if (next.has(category.id)) next.delete(category.id); else next.add(category.id);
+                        return next;
+                      })}
+                      aria-label={`${category.name} kategorisini ${collapsed ? "aç" : "daralt"}`}
+                    >
+                      <b>{collapsed ? "›" : "⌄"}</b><span>{category.name.toLocaleUpperCase("tr-TR")}</span>
+                    </button>
+                    {canManageChannels && (
+                      <button aria-label="Bu kategoride oda oluştur" onClick={() => { setNewChannelCategoryId(category.id); setModal("channel"); }}>+</button>
+                    )}
+                  </div>
+                  {!collapsed && categoryChannels.map(sidebarChannel)}
+                  {!collapsed && categoryChannels.length === 0 && <small className="empty-category">Odaları buraya sürükleyebilirsin</small>}
+                </div>
+              );
+            })}
+          {canManageChannels && (
+            <button className="create-category-button" onClick={() => openCategoryEditor()}>
+              <span>＋</span> Kategori oluştur
+            </button>
+          )}
           <div className="channel-section">
             <div className="section-label">
               <span>METİN ODALARI</span>
@@ -4222,14 +5251,28 @@ export function KuzensApp() {
                 <button aria-label="Metin odası oluştur" onClick={() => { setNewChannelKind("text"); setModal("channel"); }}>+</button>
               )}
             </div>
-            {textChannels.map((channel) => (
+            {uncategorizedTextChannels.map((channel) => (
               <button
                 className={`channel-row ${activeChannel === channel.id ? "active" : ""} ${channel.unreadCount && channel.showUnread && channel.notificationLevel !== "none" ? "unread" : ""}`}
                 key={channel.id}
+                draggable={canManageChannels}
+                onDragStart={(event) => event.dataTransfer.setData("text/kuzens-channel", channel.id)}
+                onDragOver={(event) => canManageChannels && event.preventDefault()}
+                onDrop={(event) => {
+                  event.preventDefault();
+                  const sourceId = event.dataTransfer.getData("text/kuzens-channel");
+                  if (sourceId) {
+                    void moveChannelToCategory(sourceId, null);
+                    void reorderChannelTo(sourceId, channel.id);
+                  }
+                }}
                 onClick={() => chooseChannel(channel)}
                 onContextMenu={(event) =>
                   openContextMenu(event, { kind: "channel", channel })
                 }
+                onTouchStart={(event) => startLongPress(event, { kind: "channel", channel })}
+                onTouchEnd={cancelLongPress}
+                onTouchMove={cancelLongPress}
               >
                 <span className="channel-symbol">#</span>
                 <span>{channel.name}</span>
@@ -4253,14 +5296,30 @@ export function KuzensApp() {
                 <button aria-label="Ses odası oluştur" onClick={() => { setNewChannelKind("voice"); setModal("channel"); }}>+</button>
               )}
             </div>
-            {voiceChannels.map((channel) => (
-              <div key={channel.id}>
+            {uncategorizedVoiceChannels.map((channel) => (
+              <div
+                key={channel.id}
+                draggable={canManageChannels}
+                onDragStart={(event) => event.dataTransfer.setData("text/kuzens-channel", channel.id)}
+                onDragOver={(event) => canManageChannels && event.preventDefault()}
+                onDrop={(event) => {
+                  event.preventDefault();
+                  const sourceId = event.dataTransfer.getData("text/kuzens-channel");
+                  if (sourceId) {
+                    void moveChannelToCategory(sourceId, null);
+                    void reorderChannelTo(sourceId, channel.id);
+                  }
+                }}
+              >
                 <button
                   className={`channel-row ${activeChannel === channel.id ? "active" : ""}`}
                   onClick={() => chooseChannel(channel)}
                   onContextMenu={(event) =>
                     openContextMenu(event, { kind: "channel", channel })
                   }
+                  onTouchStart={(event) => startLongPress(event, { kind: "channel", channel })}
+                  onTouchEnd={cancelLongPress}
+                  onTouchMove={cancelLongPress}
                 >
                   <span className="channel-symbol">◖</span>
                   <span>{channel.name}</span>
@@ -4443,13 +5502,13 @@ export function KuzensApp() {
                 <h1>{selected.name}</h1>
                 <p>{voiceRoomMembers.length} kişi bağlı · Uçtan uca WebRTC medya</p>
               </div>
-              <div className="connection-grade"><i /> Bağlantı iyi</div>
+              <div className={`connection-grade quality-${connectionQuality}`}><i /> Bağlantı {connectionQuality === "good" ? "iyi" : connectionQuality === "fair" ? "orta" : "zayıf"}</div>
             </div>
 
             <div className="speaker-grid">
               {visibleVoiceMembers.map((member) => (
                 <article
-                  className={`speaker-card ${member.id === profile?.id ? "speaking" : ""}`}
+                  className={`speaker-card ${speakingMembers.has(member.id) ? "speaking" : ""} ${(member.id === profile?.id && cameraEnabled) || remoteStreams[member.id]?.getVideoTracks().length ? "camera-on" : ""}`}
                   key={member.id}
                   role="button"
                   tabIndex={0}
@@ -4462,7 +5521,13 @@ export function KuzensApp() {
                   }
                 >
                   <div className="speaker-orbit">
-                    <Avatar name={member.name} tone={toneFor(member.id)} size="lg" imageUrl={member.avatarUrl} status={member.presenceStatus || "online"} />
+                    {member.id === profile?.id && cameraEnabled && voiceStream.current ? (
+                      <RemoteVideo stream={voiceStream.current} label={`${member.name} kamerası`} />
+                    ) : remoteStreams[member.id]?.getVideoTracks().length && !member.sharing ? (
+                      <RemoteVideo stream={remoteStreams[member.id]} label={`${member.name} kamerası`} />
+                    ) : (
+                      <Avatar name={member.name} tone={toneFor(member.id)} size="lg" imageUrl={member.avatarUrl} status={member.presenceStatus || "online"} />
+                    )}
                   </div>
                   <strong>{member.name}</strong>
                   <span>{member.id === profile?.id ? "Sen" : memberStatus(member)}</span>
@@ -4524,14 +5589,40 @@ export function KuzensApp() {
               </button>
               <button className={deafened ? "danger" : ""} onClick={() => setDeafened((value) => !value)}><span>◉</span>{deafened ? "Ses kapalı" : "Kulaklık"}</button>
               <button className={sharing ? "active" : ""} onClick={toggleShare}><span>▣</span>Ekran paylaş</button>
+              <button className={cameraEnabled ? "active" : ""} onClick={() => void toggleCamera()}><span>◉</span>{cameraEnabled ? "Kamerayı kapat" : "Kamera"}</button>
+              <button onClick={() => document.querySelector(".voice-stage")?.requestFullscreen?.()}><span>⛶</span>Tam ekran</button>
               <button className={voiceConnected ? "hangup" : "connect"} onClick={toggleVoice}><span>{voiceConnected ? "×" : "◖"}</span>{voiceConnected ? "Ayrıl" : "Bağlan"}</button>
             </div>
+            {voiceConnected && (
+              <div className="soundboard" aria-label="Ses tahtası">
+                <span>SES TAHTASI</span>
+                <button onClick={() => playSoundboardTone("pop")}>● Pop</button>
+                <button onClick={() => playSoundboardTone("chime")}>♫ Zil</button>
+                <button onClick={() => playSoundboardTone("spark")}>✦ Parıltı</button>
+              </div>
+            )}
+            <section className="voice-linked-chat">
+              <header><span>#</span><strong>Odaya bağlı sohbet</strong><small>Ses kapalıyken de okunabilir</small></header>
+              <div>
+                {messages.filter((message) => message.channelId === selected.id && !message.deletedAt).slice(-20).map((message) => (
+                  <article key={message.id}>
+                    <Avatar name={message.authorName} size="sm" tone={toneFor(message.authorName)} imageUrl={message.authorAvatarUrl} />
+                    <span><strong>{message.authorName}</strong><MessageText content={message.content} members={members} onMention={insertMention} emojis={customEmojis} /></span>
+                  </article>
+                ))}
+                {!messages.some((message) => message.channelId === selected.id && !message.deletedAt) && <p>Bu ses odasının sohbeti henüz boş.</p>}
+              </div>
+              <form onSubmit={sendVoiceText}>
+                <input value={voiceTextDraft} onChange={(event) => setVoiceTextDraft(event.target.value)} maxLength={2000} placeholder={`${selected.name} odasına yaz`} />
+                <button disabled={!voiceTextDraft.trim()}>Gönder</button>
+              </form>
+            </section>
             <p className="privacy-note">Sesin tarayıcının yankı ve gürültü engellemesiyle işlenir. Kayıt yapılmaz.</p>
           </div>
         ) : (
           <>
             <div
-              className="message-list"
+              className={`message-list channel-kind-${selected?.kind || "text"}`}
               ref={messageList}
               onScroll={(event) => {
                 const list = event.currentTarget;
@@ -4542,9 +5633,9 @@ export function KuzensApp() {
               }}
             >
               <section className="channel-intro">
-                <span>#</span>
-                <h1>#{selected?.name}</h1>
-                <p>Burası #{selected?.name} odasının başlangıcı. Sohbete bir şeyler bırak.</p>
+                <span>{selected ? channelSymbol(selected) : "#"}</span>
+                <h1>{selected ? channelSymbol(selected) : "#"}{selected?.name}</h1>
+                <p>{selected?.kind === "forum" ? "Her yeni mesaj ayrı bir forum konusu açar; yanıtlar konu içinde büyür." : selected?.kind === "announcement" ? "Topluluğun önemli güncellemeleri burada düzenli bir akışta yayınlanır." : `Burası #${selected?.name} odasının başlangıcı. Sohbete bir şeyler bırak.`}</p>
                 <button onClick={copyInvite}>Arkadaşlarını davet et →</button>
               </section>
 
@@ -4560,6 +5651,9 @@ export function KuzensApp() {
                     onContextMenu={(event) =>
                       openContextMenu(event, { kind: "message", message })
                     }
+                    onTouchStart={(event) => startLongPress(event, { kind: "message", message })}
+                    onTouchEnd={cancelLongPress}
+                    onTouchMove={cancelLongPress}
                   >
                     {!compact && <Avatar name={message.authorName} imageUrl={message.authorAvatarUrl} tone={message.authorName === "Savaş" ? "purple" : message.authorName === "Ece" ? "pink" : message.authorName === "Batu" ? "blue" : "orange"} />}
                     <div className="message-content">
@@ -4607,11 +5701,38 @@ export function KuzensApp() {
                                 content={message.content}
                                 members={members}
                                 onMention={insertMention}
+                                emojis={customEmojis}
                               />
                               {message.editedAt && !message.deletedAt && <small> (düzenlendi)</small>}
                             </p>
                           )}
                           {!message.deletedAt && !message.poll && <LinkEmbed content={message.content} />}
+                          {!message.deletedAt && Boolean(message.attachments?.length) && (
+                            <div className="message-attachments">
+                              {message.attachments?.map((attachment) => {
+                                if (attachment.contentType.startsWith("image/")) {
+                                  return (
+                                    <a href={attachment.url} target="_blank" rel="noopener noreferrer" key={attachment.id} className="attachment-image">
+                                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                                      <img src={attachment.url} alt={attachment.fileName} loading="lazy" />
+                                      <span>{attachment.fileName}</span>
+                                    </a>
+                                  );
+                                }
+                                if (attachment.contentType.startsWith("audio/")) {
+                                  return <audio className="attachment-audio" key={attachment.id} src={attachment.url} controls preload="metadata" />;
+                                }
+                                if (attachment.contentType.startsWith("video/")) {
+                                  return <video className="attachment-video" key={attachment.id} src={attachment.url} controls preload="metadata" />;
+                                }
+                                return (
+                                  <a className="attachment-file" href={attachment.url} target="_blank" rel="noopener noreferrer" key={attachment.id}>
+                                    <b>↧</b><span><strong>{attachment.fileName}</strong><small>{Math.ceil(attachment.size / 1024)} KB</small></span>
+                                  </a>
+                                );
+                              })}
+                            </div>
+                          )}
                           {!message.deletedAt && message.poll && (
                             <PollCard
                               poll={message.poll}
@@ -4726,8 +5847,27 @@ export function KuzensApp() {
                   )}
                 </div>
               )}
+              {pendingAttachments.length > 0 && (
+                <div className="pending-attachments">
+                  {pendingAttachments.map((file, index) => (
+                    <span key={`${file.name}-${index}`}>
+                      <b>{file.type.startsWith("image/") ? "▧" : file.type.startsWith("audio/") ? "♫" : "↧"}</b>
+                      <span>{file.name}<small>{Math.ceil(file.size / 1024)} KB</small></span>
+                      <button type="button" onClick={() => setPendingAttachments((current) => current.filter((_, itemIndex) => itemIndex !== index))}>×</button>
+                    </span>
+                  ))}
+                </div>
+              )}
               <div className="composer">
-                <button type="button" aria-label="Anket oluştur" title="Anket oluştur" onClick={() => setModal("poll")}>+</button>
+                <input
+                  ref={attachmentInput}
+                  type="file"
+                  hidden
+                  multiple
+                  accept="image/png,image/jpeg,image/webp,image/gif,audio/webm,audio/ogg,audio/mpeg,audio/wav,video/webm,application/pdf,text/plain"
+                  onChange={selectAttachments}
+                />
+                <button type="button" aria-label="Dosya ekle" title="Dosya ekle" onClick={() => attachmentInput.current?.click()}>+</button>
                 <textarea
                   value={draft}
                   onChange={(event) => setDraft(event.target.value)}
@@ -4738,13 +5878,17 @@ export function KuzensApp() {
                       event.currentTarget.form?.requestSubmit();
                     }
                   }}
-                  placeholder={`#${selected?.name} odasına mesaj gönder`}
+                  placeholder={selected?.kind === "forum" ? "Yeni forum konusu aç" : selected?.kind === "announcement" ? "Yeni duyuru yayınla" : `#${selected?.name} odasına mesaj gönder`}
                   rows={1}
                   aria-label="Mesaj"
                 />
-                <button type="button" className="composer-tool" aria-label="GIF">GIF</button>
-                <button type="button" className="composer-tool" aria-label="Emoji">☺</button>
-                <button className="send-button" type="submit" disabled={!draft.trim()} aria-label="Gönder">↑</button>
+                <button type="button" className="composer-tool" aria-label="Anket" title="Anket oluştur" onClick={() => setModal("poll")}>▥</button>
+                <button type="button" className="composer-tool" aria-label="GIF" onClick={() => {
+                  const gifUrl = window.prompt("Paylaşmak istediğin güvenli GIF bağlantısını yapıştır:");
+                  if (gifUrl && /^https:\/\/[^\s]+$/i.test(gifUrl)) setDraft((current) => `${current}${current ? " " : ""}${gifUrl}`);
+                }}>GIF</button>
+                <button type="button" className="composer-tool" aria-label="Emoji" onClick={insertCustomEmoji}>☺</button>
+                <button className="send-button" type="submit" disabled={!draft.trim() && pendingAttachments.length === 0} aria-label="Gönder">↑</button>
               </div>
             </form>
           </>
@@ -4858,7 +6002,7 @@ export function KuzensApp() {
               <span className="member-group">YASAKLILAR — {bannedMembers.length}</span>
               {bannedMembers.map((member) => (
                 <div className="member-row banned" key={member.id}>
-                  <Avatar name={member.name} tone={toneFor(member.id)} imageUrl={member.avatarUrl} status="offline" />
+                  <Avatar name={member.name} tone={toneFor(member.id)} status="offline" />
                   <span className="member-copy">
                     <strong>{member.name}</strong>
                     <small>{member.reason}</small>
@@ -4932,6 +6076,18 @@ export function KuzensApp() {
                 />
                 <button disabled={directUsername.length < 3}>＋</button>
               </form>
+              <button
+                type="button"
+                className="direct-group-button"
+                onClick={() => {
+                  void loadFriends();
+                  setGroupDirectMembers(new Set());
+                  setGroupDirectName("");
+                  setModal("groupDirect");
+                }}
+              >
+                <span>＋</span><b>Grup konuşması oluştur</b>
+              </button>
               {directRequests.length > 0 && (
                 <div className="direct-requests">
                   <span>MESAJ İSTEKLERİ <b>{directRequests.length}</b></span>
@@ -4965,12 +6121,13 @@ export function KuzensApp() {
                         setDirectMessages([]);
                       }}
                     >
-                      <Avatar name={conversation.profile.name} tone={toneFor(conversation.profile.id)} imageUrl={conversation.profile.avatarUrl} />
+                      <Avatar name={conversation.name || conversation.profile.name} tone={toneFor(conversation.id)} imageUrl={conversation.isGroup ? null : conversation.profile.avatarUrl} />
                       <span>
-                        <strong>{conversation.profile.name}</strong>
+                        <strong>{conversation.name || conversation.profile.name}</strong>
                         <small>{conversation.lastMessage}</small>
                       </span>
                       <time>{timeLabel(conversation.updatedAt)}</time>
+                      {conversation.pinned && <span className="direct-pin" title="Sabitlendi">◆</span>}
                       {Boolean(conversation.unreadCount) && (
                         <b className="direct-unread">{Math.min(99, conversation.unreadCount || 0)}</b>
                       )}
@@ -5006,16 +6163,44 @@ export function KuzensApp() {
                 <>
                   <header className="direct-chat-head">
                     <Avatar
-                      name={activeDirectConversation.profile.name}
-                      tone={toneFor(activeDirectConversation.profile.id)}
-                      imageUrl={activeDirectConversation.profile.avatarUrl}
+                      name={activeDirectConversation.name || activeDirectConversation.profile.name}
+                      tone={toneFor(activeDirectConversation.id)}
+                      imageUrl={activeDirectConversation.isGroup ? null : activeDirectConversation.profile.avatarUrl}
                       online={members.some(
                         (member) => member.id === activeDirectConversation.profile.id && member.online,
                       )}
                     />
                     <div>
-                      <strong>{activeDirectConversation.profile.name}</strong>
-                      <span>@{activeDirectConversation.profile.username}</span>
+                      <strong>{activeDirectConversation.name || activeDirectConversation.profile.name}</strong>
+                      <span>{activeDirectConversation.isGroup ? `${activeDirectConversation.members?.length || 0} üye` : `@${activeDirectConversation.profile.username}`}</span>
+                    </div>
+                    <div className="direct-head-tools">
+                      <input
+                        value={directSearch}
+                        onChange={(event) => setDirectSearch(event.target.value)}
+                        placeholder="Mesajlarda ara"
+                        aria-label="Özel mesajlarda ara"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => void updateDirectConversationSettings({ pinned: !activeDirectConversation.pinned })}
+                      >
+                        {activeDirectConversation.pinned ? "Sabitlemeyi kaldır" : "Sabitle"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const muted = Boolean(
+                            activeDirectConversation.mutedUntil &&
+                            new Date(activeDirectConversation.mutedUntil).getTime() > Date.now(),
+                          );
+                          void updateDirectConversationSettings({ mutedMinutes: muted ? 0 : 480 });
+                        }}
+                      >
+                        {activeDirectConversation.mutedUntil && new Date(activeDirectConversation.mutedUntil).getTime() > Date.now()
+                          ? "Sesi aç"
+                          : "8 saat sustur"}
+                      </button>
                     </div>
                     <button
                       onClick={() => {
@@ -5024,7 +6209,7 @@ export function KuzensApp() {
                         );
                         if (member) openMemberProfile(member);
                       }}
-                      disabled={!members.some(
+                      disabled={activeDirectConversation.isGroup || !members.some(
                         (item) => item.id === activeDirectConversation.profile.id,
                       )}
                     >
@@ -5055,17 +6240,17 @@ export function KuzensApp() {
                   <div className="direct-message-list" ref={directMessageList}>
                     <section className="direct-intro">
                       <Avatar
-                        name={activeDirectConversation.profile.name}
+                        name={activeDirectConversation.name || activeDirectConversation.profile.name}
                         tone={toneFor(activeDirectConversation.profile.id)}
                         size="lg"
-                        imageUrl={activeDirectConversation.profile.avatarUrl}
+                        imageUrl={activeDirectConversation.isGroup ? null : activeDirectConversation.profile.avatarUrl}
                       />
-                      <h3>{activeDirectConversation.profile.name}</h3>
-                      <span>@{activeDirectConversation.profile.username}</span>
-                      <p>{activeDirectConversation.profile.bio || "Özel konuşmanızın başlangıcı."}</p>
+                      <h3>{activeDirectConversation.name || activeDirectConversation.profile.name}</h3>
+                      <span>{activeDirectConversation.isGroup ? activeDirectConversation.members?.map((item) => `@${item.username}`).join(" · ") : `@${activeDirectConversation.profile.username}`}</span>
+                      <p>{activeDirectConversation.isGroup ? "Grup konuşmanızın başlangıcı." : activeDirectConversation.profile.bio || "Özel konuşmanızın başlangıcı."}</p>
                     </section>
-                    {directMessages.map((message, index) => {
-                      const previous = directMessages[index - 1];
+                    {visibleDirectMessages.map((message, index) => {
+                      const previous = visibleDirectMessages[index - 1];
                       const compact =
                         previous?.authorProfileId === message.authorProfileId &&
                         new Date(message.createdAt).getTime() -
@@ -5096,11 +6281,17 @@ export function KuzensApp() {
                               {message.editedAt && !message.deletedAt && <small> · düzenlendi</small>}
                             </p>
                             {!message.deletedAt && message.content && <LinkEmbed content={message.content} />}
+                            {message.pinned && <small className="direct-pinned-label">◆ Sabitlenen mesaj</small>}
                           </div>
-                          {message.authorProfileId === profile?.id && !message.deletedAt && (
+                          {!message.deletedAt && (
                             <span className="direct-message-actions">
-                              <button onClick={() => void editDirectMessage(message)}>Düzenle</button>
-                              <button onClick={() => void deleteDirectMessage(message)}>Sil</button>
+                              <button onClick={() => void pinDirectMessage(message)}>{message.pinned ? "Sabitleme" : "Sabitle"}</button>
+                              {message.authorProfileId === profile?.id && (
+                                <>
+                                  <button onClick={() => void editDirectMessage(message)}>Düzenle</button>
+                                  <button onClick={() => void deleteDirectMessage(message)}>Sil</button>
+                                </>
+                              )}
                             </span>
                           )}
                         </article>
@@ -5121,7 +6312,7 @@ export function KuzensApp() {
                         }}
                         maxLength={2000}
                         rows={1}
-                        placeholder={`@${activeDirectConversation.profile.username} kişisine mesaj gönder`}
+                        placeholder={activeDirectConversation.isGroup ? `${activeDirectConversation.name || "gruba"} mesaj gönder` : `@${activeDirectConversation.profile.username} kişisine mesaj gönder`}
                       />
                       <button disabled={!directDraft.trim()}>Gönder</button>
                     </form>
@@ -5136,6 +6327,41 @@ export function KuzensApp() {
               )}
             </div>
           </section>
+        </div>
+      )}
+
+      {modal === "groupDirect" && (
+        <div className="modal-backdrop" onMouseDown={() => setModal(null)}>
+          <form className="modal-card group-direct-modal" onSubmit={createGroupDirect} onMouseDown={(event) => event.stopPropagation()}>
+            <button type="button" className="modal-close" onClick={() => setModal(null)} aria-label="Kapat">×</button>
+            <span className="eyebrow">YENİ GRUP</span>
+            <h2>Grup konuşması oluştur</h2>
+            <p>En az iki, en fazla dokuz arkadaş seç. Grup adı daha sonra değiştirilebilir.</p>
+            <label className="settings-field">
+              <span>Grup adı (isteğe bağlı)</span>
+              <input maxLength={40} value={groupDirectName} onChange={(event) => setGroupDirectName(event.target.value)} placeholder="Oyun ekibi" />
+            </label>
+            <div className="group-friend-picker">
+              {friendItems.filter((item) => item.status === "accepted").map((item) => (
+                <label key={item.profile.id}>
+                  <Avatar name={item.profile.name} size="sm" tone={toneFor(item.profile.id)} imageUrl={item.profile.avatarUrl} />
+                  <span><strong>{item.profile.name}</strong><small>{item.profile.tag}</small></span>
+                  <input
+                    type="checkbox"
+                    checked={groupDirectMembers.has(item.profile.id)}
+                    onChange={() => setGroupDirectMembers((current) => {
+                      const next = new Set(current);
+                      if (next.has(item.profile.id)) next.delete(item.profile.id);
+                      else if (next.size < 9) next.add(item.profile.id);
+                      return next;
+                    })}
+                  />
+                </label>
+              ))}
+              {!friendItems.some((item) => item.status === "accepted") && <p className="empty-category">Önce en az iki arkadaş eklemelisin.</p>}
+            </div>
+            <button className="primary-button" disabled={groupDirectMembers.size < 2}>Grubu oluştur · {groupDirectMembers.size}/9</button>
+          </form>
         </div>
       )}
 
@@ -5170,12 +6396,18 @@ export function KuzensApp() {
               </div>
               <button disabled={friendUsername.length < 3}>İstek gönder</button>
             </form>
+            <div className="friend-tabs" role="tablist">
+              {(["online", "all", "pending", "blocked"] as const).map((tab) => (
+                <button type="button" role="tab" aria-selected={friendTab === tab} className={friendTab === tab ? "active" : ""} key={tab} onClick={() => setFriendTab(tab)}>
+                  {tab === "online" ? "Çevrimiçi" : tab === "all" ? "Tümü" : tab === "pending" ? "Bekleyen" : "Engellenen"}
+                </button>
+              ))}
+            </div>
             <div className="friend-list">
               {friendsLoading ? (
                 <div className="roles-loading">Arkadaşlar yükleniyor…</div>
-              ) : friendItems.length ? (
-                friendItems
-                  .filter((item) => item.status !== "blocked")
+              ) : visibleFriendItems.length ? (
+                visibleFriendItems
                   .map((item) => (
                     <article key={item.id}>
                       <Avatar
@@ -5215,23 +6447,16 @@ export function KuzensApp() {
                             Kabul et
                           </button>
                         )}
-                        <button onClick={() => void friendAction("remove", item.profile.id)}>
-                          Kaldır
-                        </button>
-                        <button
-                          className="danger"
-                          onClick={() => void friendAction("block", item.profile.id)}
-                        >
-                          Engelle
-                        </button>
+                        <button onClick={() => void friendAction("remove", item.profile.id)}>{item.status === "blocked" ? "Engeli kaldır" : "Kaldır"}</button>
+                        {item.status !== "blocked" && <button className="danger" onClick={() => void friendAction("block", item.profile.id)}>Engelle</button>}
                       </div>
                     </article>
                   ))
               ) : (
                 <div className="empty-search">
                   <span>☺</span>
-                  <strong>Henüz arkadaşın yok</strong>
-                  <p>Kullanıcı adıyla güvenli bir istek gönder.</p>
+                  <strong>Bu bölüm boş</strong>
+                  <p>Arkadaşların ve isteklerin seçtiğin sekmede burada görünür.</p>
                 </div>
               )}
             </div>
@@ -5376,6 +6601,21 @@ export function KuzensApp() {
               <article><span>ODALAR</span><strong>{channels.length}</strong><small>{textChannels.length} metin · {voiceChannels.length} ses</small></article>
               <article><span>GÜVENLİK</span><strong>Etkin</strong><small>Rol kontrollü işlemler</small></article>
             </div>
+            <section className="custom-emoji-manager">
+              <header>
+                <div><strong>Özel emojiler</strong><small>Mesajda :emoji_adi: yazarak kullanılır · {customEmojis.length}/50</small></div>
+                <label className="secondary-button">Emoji yükle<input type="file" accept="image/png,image/jpeg,image/webp,image/gif" onChange={uploadCustomEmoji} /></label>
+              </header>
+              <div>
+                {customEmojis.map((emoji) => (
+                  <span key={emoji.id}>
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={emoji.url} alt={`:${emoji.name}:`} /><b>:{emoji.name}:</b><button type="button" onClick={() => void deleteCustomEmoji(emoji)}>×</button>
+                  </span>
+                ))}
+                {!customEmojis.length && <small>Henüz özel emoji eklenmedi.</small>}
+              </div>
+            </section>
             <div className="server-settings-links">
               <button type="button" onClick={openRoles}><span>♢</span><div><strong>Roller ve yetkiler</strong><small>Rol oluştur, izinleri ve üye rollerini düzenle</small></div><b>›</b></button>
               <button type="button" onClick={() => { setModal("channel"); setNewChannelKind("text"); }}><span>#</span><div><strong>Yeni oda oluştur</strong><small>Metin veya ses alanı ekle</small></div><b>›</b></button>
@@ -5420,12 +6660,41 @@ export function KuzensApp() {
               <button type="button" className={newChannelKind === "voice" ? "active" : ""} onClick={() => setNewChannelKind("voice")}>
                 <span>◖</span><div><strong>Ses odası</strong><small>Canlı ses ve ekran paylaşımı</small></div>
               </button>
+              <button type="button" className={newChannelKind === "forum" ? "active" : ""} onClick={() => setNewChannelKind("forum")}>
+                <span>▤</span><div><strong>Forum kanalı</strong><small>Konulara ayrılmış kalıcı tartışmalar</small></div>
+              </button>
+              <button type="button" className={newChannelKind === "announcement" ? "active" : ""} onClick={() => setNewChannelKind("announcement")}>
+                <span>◉</span><div><strong>Duyuru kanalı</strong><small>Önemli güncellemeler için düzenli akış</small></div>
+              </button>
             </div>
             <label className="field-label">
               ODA ADI
-              <div><span>{newChannelKind === "text" ? "#" : "◖"}</span><input autoFocus maxLength={32} value={newChannelName} onChange={(event) => setNewChannelName(event.target.value)} placeholder="yeni-oda" /></div>
+              <div><span>{newChannelKind === "voice" ? "◖" : newChannelKind === "forum" ? "▤" : newChannelKind === "announcement" ? "◉" : "#"}</span><input autoFocus maxLength={32} value={newChannelName} onChange={(event) => setNewChannelName(event.target.value)} placeholder="yeni-oda" /></div>
+            </label>
+            <label className="settings-field">
+              <span>Kategori</span>
+              <select value={newChannelCategoryId} onChange={(event) => setNewChannelCategoryId(event.target.value)}>
+                <option value="">Kategorisiz</option>
+                {categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
+              </select>
             </label>
             <button className="primary-button" disabled={!newChannelName.trim()}>Odayı oluştur</button>
+          </form>
+        </div>
+      )}
+
+      {modal === "category" && (
+        <div className="modal-backdrop" onMouseDown={() => setModal(null)}>
+          <form className="modal-card compact-modal" onSubmit={saveCategory} onMouseDown={(event) => event.stopPropagation()}>
+            <button type="button" className="modal-close" onClick={() => setModal(null)} aria-label="Kapat">×</button>
+            <span className="eyebrow">ODA DÜZENİ</span>
+            <h2>{editingCategory ? "Kategoriyi düzenle" : "Kategori oluştur"}</h2>
+            <p>İlgili odaları tek bir başlık altında topla; masaüstünde sürükleyip bırakabilirsin.</p>
+            <label className="settings-field">
+              <span>Kategori adı</span>
+              <input autoFocus required maxLength={40} value={newCategoryName} onChange={(event) => setNewCategoryName(event.target.value)} placeholder="Örn. OYUN ODALARI" />
+            </label>
+            <button className="primary-button" disabled={!newCategoryName.trim()}>{editingCategory ? "Kaydet" : "Oluştur"}</button>
           </form>
         </div>
       )}
@@ -5628,7 +6897,23 @@ export function KuzensApp() {
                 placeholder="Bu kanalda neler konuşulur?"
               />
             </label>
-            {selected.kind === "text" && (
+            <div className="settings-grid">
+              <label className="settings-field">
+                <span>Kategori</span>
+                <select value={channelCategoryId} onChange={(event) => setChannelCategoryId(event.target.value)}>
+                  <option value="">Kategorisiz</option>
+                  {categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
+                </select>
+              </label>
+              <label className="settings-field">
+                <span>Mesaj geçmişi</span>
+                <select value={channelHistoryMode} onChange={(event) => setChannelHistoryMode(event.target.value as "all" | "since_join")} disabled={selected.kind === "voice"}>
+                  <option value="all">Tüm geçmişi göster</option>
+                  <option value="since_join">Katıldığı andan itibaren</option>
+                </select>
+              </label>
+            </div>
+            {selected.kind !== "voice" && (
               <label className="settings-field">
                 <span>Yavaş mod</span>
                 <select
@@ -5768,6 +7053,43 @@ export function KuzensApp() {
                       );
                     })}
                 </div>
+              )}
+              {!channelPermissionsLoading && (
+                <details className="member-overwrite-editor">
+                  <summary>Üye bazlı özel izinler <small>Rol sonucunun üzerine uygulanır</small></summary>
+                  <div className="channel-overwrite-list">
+                    {members.map((member) => {
+                      const overwrite = channelMemberPermissionOverwrites.find((item) => item.profileId === member.id);
+                      return (
+                        <article key={member.id}>
+                          <header>
+                            <Avatar name={member.name} size="sm" tone={toneFor(member.id)} imageUrl={member.avatarUrl} />
+                            <strong>{member.name}</strong>
+                          </header>
+                          <div>
+                            {channelPermissionOptions
+                              .filter((permission) => (permission.kinds as readonly string[]).includes(selected.kind))
+                              .map((permission) => {
+                                const state = overwrite && (overwrite.allowPermissions & permission.bit) !== 0 ? "allow" : overwrite && (overwrite.denyPermissions & permission.bit) !== 0 ? "deny" : "inherit";
+                                return (
+                                  <label key={permission.bit}>
+                                    <span>{permission.label}</span>
+                                    <span className="tri-state">
+                                      {(["deny", "inherit", "allow"] as const).map((value) => (
+                                        <button type="button" key={value} className={state === value ? `active ${value}` : ""} onClick={() => setChannelMemberPermission(member.id, permission.bit, value)}>
+                                          {value === "deny" ? "×" : value === "allow" ? "✓" : "—"}
+                                        </button>
+                                      ))}
+                                    </span>
+                                  </label>
+                                );
+                              })}
+                          </div>
+                        </article>
+                      );
+                    })}
+                  </div>
+                </details>
               )}
             </section>
             <div className="modal-actions">
@@ -6230,6 +7552,15 @@ export function KuzensApp() {
               )}
             </section>
 
+            <section className="preference-section install-section">
+              <div className="preference-heading"><span>MASAÜSTÜ UYGULAMASI</span><small>PWA · ücretsiz</small></div>
+              <div className="install-actions">
+                <button type="button" onClick={() => void installKuzens()}><span>⬇</span><strong>Kuzens’i yükle</strong><small>Başlat menüsü ve masaüstünden aç</small></button>
+                <button type="button" onClick={() => void enableBrowserNotifications()}><span>◉</span><strong>Bildirimleri aç</strong><small>Yalnızca açık izinle çalışır</small></button>
+                <a href="/api/data-export" download><span>↧</span><strong>Verilerimi indir</strong><small>KVKK uyumlu JSON dışa aktarımı</small></a>
+              </div>
+            </section>
+
             <div className="modal-actions">
               <button type="button" onClick={() => setPreferences(defaultPreferences)}>Varsayılana dön</button>
               <button type="button" onClick={() => setModal(null)}>Vazgeç</button>
@@ -6369,7 +7700,11 @@ export function KuzensApp() {
             onMouseDown={(event) => event.stopPropagation()}
           >
             <button type="button" className="modal-close" onClick={() => setModal(null)} aria-label="Kapat">×</button>
-            <div className="profile-settings-preview">
+            <div className="profile-settings-preview" style={{ borderColor: profileColor }}>
+              <div
+                className="profile-preview-banner"
+                style={profileBannerPreview ? { backgroundImage: `url(${profileBannerPreview})` } : { background: `linear-gradient(120deg, ${profileColor}, #171225)` }}
+              />
               <Avatar
                 name={profileDisplayName || profile.displayName}
                 tone="purple"
@@ -6412,6 +7747,23 @@ export function KuzensApp() {
                 </button>
               )}
             </div>
+            <div className="avatar-upload-panel banner-upload-panel">
+              <div>
+                <strong>Profil kapağı</strong>
+                <span>900×300 oranına güvenli biçimde kırpılır. Bu özellik herkes için ücretsizdir.</span>
+              </div>
+              <label className="secondary-button avatar-file-button">
+                {profileBannerPreview ? "Kapağı değiştir" : "Kapak ekle"}
+                <input type="file" accept="image/png,image/jpeg,image/webp" onChange={selectProfileBanner} />
+              </label>
+              {profileBannerPreview && (
+                <button type="button" className="ghost-danger-button" onClick={() => {
+                  setProfileBannerPreview(null);
+                  setProfileBannerDataUrl(null);
+                  setProfileRemoveBanner(true);
+                }}>Kaldır</button>
+              )}
+            </div>
             <div className="settings-grid">
               <label className="settings-field">
                 <span>Görünen ad</span>
@@ -6426,6 +7778,21 @@ export function KuzensApp() {
               <span>Özel durum</span>
               <input maxLength={80} value={profileCustomStatus} onChange={(event) => setProfileCustomStatus(event.target.value)} placeholder="Ne yapıyorsun?" />
             </label>
+            <div className="settings-grid">
+              <label className="settings-field">
+                <span>Durumu temizle</span>
+                <select value={profileStatusDuration} onChange={(event) => setProfileStatusDuration(event.target.value)}>
+                  <option value="0">Ben değiştirene kadar</option>
+                  <option value="60">1 saat sonra</option>
+                  <option value="240">4 saat sonra</option>
+                  <option value="1440">Yarın</option>
+                </select>
+              </label>
+              <label className="settings-field">
+                <span>Profil rengi</span>
+                <input type="color" value={profileColor} onChange={(event) => setProfileColor(event.target.value)} />
+              </label>
+            </div>
             <label className="settings-field">
               <span>Çevrimiçi görünüm</span>
               <select value={profilePresence} onChange={(event) => setProfilePresence(event.target.value as typeof profilePresence)}>
@@ -6434,6 +7801,11 @@ export function KuzensApp() {
                 <option value="dnd">Rahatsız etmeyin</option>
                 <option value="invisible">Görünmez</option>
               </select>
+            </label>
+            <label className="settings-toggle profile-privacy-toggle">
+              <span><strong>Arkadaşlık isteklerine izin ver</strong><small>Kapatırsan yeni kullanıcılar sana istek gönderemez.</small></span>
+              <input type="checkbox" checked={profileAllowFriendRequests} onChange={(event) => setProfileAllowFriendRequests(event.target.checked)} />
+              <i />
             </label>
             <div className="presence-preview" aria-live="polite">
               <i className={`presence-dot presence-${profilePresence}`} />
@@ -6460,7 +7832,10 @@ export function KuzensApp() {
             onMouseDown={(event) => event.stopPropagation()}
           >
             <button className="modal-close" onClick={() => setModal(null)} aria-label="Kapat">×</button>
-            <div className="member-profile-banner" />
+            <div
+              className="member-profile-banner"
+              style={viewingMember.bannerUrl ? { backgroundImage: `url(${viewingMember.bannerUrl})` } : { background: `linear-gradient(120deg, ${viewingMember.profileColor || "#8b5cf6"}, #171225)` }}
+            />
             <Avatar
               name={viewingMember.name}
               tone={toneFor(viewingMember.id)}
@@ -6875,6 +8250,27 @@ export function KuzensApp() {
                   />
                   <small>En fazla 100 ifade; normalleştirilmiş eşleşme kullanılır, düzenli ifade çalıştırılmaz.</small>
                 </label>
+                <label className="settings-field">
+                  <span>Engellenen alan adları</span>
+                  <textarea
+                    maxLength={2000}
+                    value={autoModSettings.blockedDomains}
+                    onChange={(event) => setAutoModSettings((current) => ({ ...current, blockedDomains: event.target.value }))}
+                    placeholder={"Her satıra bir alan adı\nörnek-site.com"}
+                  />
+                  <small>Alt alan adları da engellenir; yalnızca gerçek URL içindeki alan adı denetlenir.</small>
+                </label>
+                <div className="settings-grid">
+                  <label className="settings-field">
+                    <span>Dakikada mesaj sınırı</span>
+                    <input type="number" min={3} max={60} value={autoModSettings.maxMessagesPerMinute} onChange={(event) => setAutoModSettings((current) => ({ ...current, maxMessagesPerMinute: Number(event.target.value) }))} />
+                  </label>
+                  <label className="settings-field">
+                    <span>Raid katılım eşiği</span>
+                    <input type="number" min={3} max={100} value={autoModSettings.raidJoinLimit} onChange={(event) => setAutoModSettings((current) => ({ ...current, raidJoinLimit: Number(event.target.value) }))} />
+                    <small>Şüpheli toplu katılım denetimi için eşik.</small>
+                  </label>
+                </div>
                 <fieldset className="automod-exemptions">
                   <legend>İstisna odaları</legend>
                   <p>Güvendiğin bot veya yönetim odalarında filtreyi atlayabilirsin.</p>
@@ -6911,6 +8307,31 @@ export function KuzensApp() {
               </>
             )}
           </form>
+        </div>
+      )}
+
+      {modal === "reports" && (
+        <div className="modal-backdrop" onMouseDown={() => setModal(null)}>
+          <section className="modal-card reports-modal" onMouseDown={(event) => event.stopPropagation()}>
+            <button className="modal-close" onClick={() => setModal(null)} aria-label="Kapat">×</button>
+            <span className="eyebrow">GÜVENLİK MERKEZİ</span>
+            <h2>Bildirim kuyruğu</h2>
+            <p>Üyelerin mesaj ve profil bildirimlerini değerlendir; sonuçlar denetim kaydına yazılır.</p>
+            <div className="report-list">
+              {reportsLoading ? <div className="roles-loading">Bildirimler yükleniyor…</div> : contentReports.length ? contentReports.map((report) => (
+                <article key={report.id} className={`status-${report.status}`}>
+                  <header><span>{report.targetType === "message" ? "MESAJ" : "PROFİL"}</span><time>{timeLabel(report.createdAt)}</time><b>{report.status === "open" ? "AÇIK" : report.status === "reviewed" ? "İNCELENDİ" : "KAPALI"}</b></header>
+                  <strong>{report.reason}</strong>
+                  {report.details && <p>{report.details}</p>}
+                  <small>Hedef: {report.targetId}</small>
+                  <div>
+                    <button onClick={() => void reviewReport(report, "reviewed")}>İncelendi</button>
+                    <button onClick={() => void reviewReport(report, "closed")}>Kapat</button>
+                  </div>
+                </article>
+              )) : <div className="empty-search"><span>✓</span><strong>Açık bildirim yok</strong><p>Topluluk kuyruğu temiz.</p></div>}
+            </div>
+          </section>
         </div>
       )}
 
@@ -7259,9 +8680,19 @@ export function KuzensApp() {
             <span className="eyebrow">GELEN KUTUSU</span>
             <h2>Bahsetmeler ve yanıtlar</h2>
             <p>Yalnızca sana hedeflenen bildirimler burada görünür.</p>
+            <div className="notification-tabs">
+              {(["all", "mentions", "replies"] as const).map((tab) => (
+                <button key={tab} className={notificationTab === tab ? "active" : ""} onClick={() => setNotificationTab(tab)}>
+                  {tab === "all" ? "Tümü" : tab === "mentions" ? "Bahsetmeler" : "Yanıtlar"}
+                </button>
+              ))}
+              <button onClick={() => void enableBrowserNotifications()}>Masaüstü bildirimi</button>
+            </div>
             <div className="notification-list">
-              {notifications.length ? (
-                notifications.map((notification) => (
+              {notifications.filter((notification) => notificationTab === "all" || (notificationTab === "replies" ? notification.kind === "reply" : notification.kind !== "reply")).length ? (
+                notifications
+                  .filter((notification) => notificationTab === "all" || (notificationTab === "replies" ? notification.kind === "reply" : notification.kind !== "reply"))
+                  .map((notification) => (
                   <button
                     key={notification.id}
                     onClick={() => void openNotification(notification)}
@@ -7269,7 +8700,7 @@ export function KuzensApp() {
                     <span className="notification-avatar">{initials(notification.authorName)}</span>
                     <span>
                       <strong>{notification.authorName}</strong>
-                      <small>{notification.serverName} · #{notification.channelName}</small>
+                      <small>{notification.kind === "reply" ? "YANIT" : notification.kind === "role" ? "ROL ETİKETİ" : notification.kind === "everyone" ? "TOPLU ETİKET" : "BAHSETME"} · {notification.serverName} · #{notification.channelName}</small>
                       <p>{notification.content}</p>
                     </span>
                     <time>{timeLabel(notification.createdAt)}</time>
@@ -7370,6 +8801,7 @@ export function KuzensApp() {
               <button onClick={() => void openServerGuide()}><span>✓</span>Başlangıç rehberi</button>
               <button onClick={() => { setNewChannelKind("text"); setModal("channel"); }}><span>#</span>Metin kanalı oluştur</button>
               <button onClick={() => { setNewChannelKind("voice"); setModal("channel"); }}><span>◖</span>Ses kanalı oluştur</button>
+              <button onClick={() => openCategoryEditor()}><span>▾</span>Kategori oluştur</button>
               <i />
               <button onClick={openRoles}><span>♢</span>Roller ve yetkiler</button>
               {ownsActiveServer && (
@@ -7378,17 +8810,31 @@ export function KuzensApp() {
               {(permissions & 63) !== 0 && (
                 <button onClick={() => void openAuditLog()}><span>◎</span>Denetim kaydı</button>
               )}
+              {canManageMessages && <button onClick={() => void openReports()}><span>!</span>Bildirim kuyruğu</button>}
               {canManageServer && (
                 <button onClick={() => void openAutoMod()}><span>⌁</span>AutoMod ayarları</button>
               )}
               <button onClick={openAura}><span>✦</span>Kuzens Aura</button>
             </>
           )}
+          {contextMenu.kind === "category" && contextMenu.category && (
+            <>
+              <span className="context-title">{contextMenu.category.name}</span>
+              <button onClick={() => { setNewChannelCategoryId(contextMenu.category!.id); setModal("channel"); }}><span>＋</span>Oda oluştur</button>
+              {canManageChannels && (
+                <>
+                  <button onClick={() => openCategoryEditor(contextMenu.category!)}><span>✎</span>Kategoriyi düzenle</button>
+                  <button onClick={() => void syncCategoryPermissions(contextMenu.category!)}><span>♢</span>İzinleri senkronize et</button>
+                  <button className="danger" onClick={() => void deleteCategory(contextMenu.category!)}><span>×</span>Kategoriyi sil</button>
+                </>
+              )}
+            </>
+          )}
           {contextMenu.kind === "channel" && contextMenu.channel && (
             <>
               <span className="context-title">#{contextMenu.channel.name}</span>
               <button onClick={() => toggleFavoriteChannel(contextMenu.channel!)}><span>★</span>{favoriteChannelIds.has(contextMenu.channel.id) ? "Favorilerden çıkar" : "Favorilere ekle"}</button>
-              {contextMenu.channel.kind === "text" && (
+              {contextMenu.channel.kind !== "voice" && (
                 <>
                   <button onClick={() => { void markChannelRead(contextMenu.channel!); setToast({ text: "Kanal okundu işaretlendi.", tone: "success" }); }}><span>✓</span>Okundu işaretle</button>
                   <button onClick={() => openChannelNotifications(contextMenu.channel!)}><span>♢</span>Bildirim ayarları</button>
@@ -7434,7 +8880,11 @@ export function KuzensApp() {
               <i />
               <button onClick={() => { void navigator.clipboard.writeText(contextMenu.message!.content); setToast({ text: "Mesaj metni kopyalandı.", tone: "success" }); }}><span>▣</span>Metni kopyala</button>
               <button onClick={() => void copyMessageLink(contextMenu.message!)}><span>⛓</span>Mesaj bağlantısını kopyala</button>
+              <button onClick={() => void forwardMessage(contextMenu.message!)}><span>↗</span>Mesajı ilet</button>
               <button onClick={() => void saveBookmark(contextMenu.message!)}><span>☆</span>Sonra için kaydet</button>
+              {contextMenu.message.authorProfileId !== profile?.id && (
+                <button onClick={() => void reportContent("message", contextMenu.message!.id)}><span>!</span>Mesajı bildir</button>
+              )}
               {(canManageMessages ||
                 contextMenu.message.authorProfileId === profile?.id ||
                 contextMenu.message.authorTag === `@${profile?.username}`) && (
@@ -7458,6 +8908,7 @@ export function KuzensApp() {
                   <button onClick={() => void startDirectMessage(contextMenu.member!)}><span>✉</span>Mesaj gönder</button>
                   <button onClick={() => void requestFriend(contextMenu.member!)}><span>＋</span>Arkadaş ekle</button>
                   <button className="danger" onClick={() => void friendAction("block", contextMenu.member!.id)}><span>⊘</span>Engelle</button>
+                  <button onClick={() => void reportContent("profile", contextMenu.member!.id)}><span>!</span>Kullanıcıyı bildir</button>
                 </>
               )}
               {(canKickMembers || canBanMembers) &&
@@ -7466,6 +8917,10 @@ export function KuzensApp() {
                   <>
                     <i />
                     {canKickMembers && <button className="danger" onClick={() => void moderateMember(contextMenu.member!, "kick")}><span>↗</span>Topluluktan çıkar</button>}
+                    {canKickMembers && <button onClick={() => void memberControl(contextMenu.member!, "timeout")}><span>◷</span>Timeout uygula</button>}
+                    {canKickMembers && contextMenu.member.voiceChannelId && <button onClick={() => void memberControl(contextMenu.member!, "voiceDisconnect")}><span>◖</span>Sesten çıkar</button>}
+                    {canKickMembers && contextMenu.member.voiceChannelId && <button onClick={() => void memberControl(contextMenu.member!, "serverMute")}><span>μ</span>{contextMenu.member.serverMuted ? "Sunucu susturmasını kaldır" : "Sunucuda sustur"}</button>}
+                    {canManageRoles && <button onClick={() => void memberControl(contextMenu.member!, "nickname")}><span>✎</span>Takma adı düzenle</button>}
                     {canBanMembers && <button className="danger" onClick={() => void moderateMember(contextMenu.member!, "ban")}><span>!</span>Yasakla</button>}
                   </>
                 )}

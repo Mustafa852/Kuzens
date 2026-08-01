@@ -1,7 +1,9 @@
 import { and, asc, eq } from "drizzle-orm";
 import {
+  channelMemberPermissionOverwrites,
   channelPermissionOverwrites,
   channels,
+  profiles,
   roles,
 } from "@/db/schema";
 import {
@@ -31,6 +33,12 @@ const CHANNEL_PERMISSION_MASK =
 
 type OverwriteInput = {
   roleId?: string;
+  allowPermissions?: number;
+  denyPermissions?: number;
+};
+
+type MemberOverwriteInput = {
+  profileId?: string;
   allowPermissions?: number;
   denyPermissions?: number;
 };
@@ -65,7 +73,7 @@ export async function GET(request: Request) {
     const channelId = cleanText(url.searchParams.get("channel"), { max: 80 });
     const { db, profile } = await requireMember(identity, serverId);
     const channel = await scopedChannel(db, serverId, channelId);
-    const [roleRows, overwrites] = await Promise.all([
+    const [roleRows, overwrites, memberOverwrites, memberRows] = await Promise.all([
       db
         .select()
         .from(roles)
@@ -75,11 +83,20 @@ export async function GET(request: Request) {
         .select()
         .from(channelPermissionOverwrites)
         .where(eq(channelPermissionOverwrites.channelId, channelId)),
+      db
+        .select()
+        .from(channelMemberPermissionOverwrites)
+        .where(eq(channelMemberPermissionOverwrites.channelId, channelId)),
+      db
+        .select({ id: profiles.id, displayName: profiles.displayName, username: profiles.username })
+        .from(profiles),
     ]);
     return apiJson({
       channel,
       roles: roleRows,
       overwrites,
+      memberOverwrites,
+      members: memberRows,
       permissionMask: CHANNEL_PERMISSION_MASK,
       canManage:
         ((await requirePermission(
@@ -103,6 +120,7 @@ export async function PUT(request: Request) {
       serverId?: string;
       channelId?: string;
       overwrites?: OverwriteInput[];
+      memberOverwrites?: MemberOverwriteInput[];
     }>(request, 16_384);
     const serverId = cleanText(payload.serverId || DEFAULT_SERVER_ID, {
       max: 80,
@@ -146,6 +164,30 @@ export async function PUT(request: Request) {
       }
       return { roleId, allowPermissions, denyPermissions };
     });
+    const requestedMemberOverwrites = payload.memberOverwrites || [];
+    if (!Array.isArray(requestedMemberOverwrites) || requestedMemberOverwrites.length > 50) {
+      throw new ApiError(400, "Üye oda izinleri geçersiz.");
+    }
+    const memberRows = await db.select({ id: profiles.id }).from(profiles);
+    const validProfileIds = new Set(memberRows.map((member) => member.id));
+    const normalizedMembers = requestedMemberOverwrites.map((overwrite) => {
+      const profileId = cleanText(overwrite.profileId, { max: 80 });
+      const allowPermissions = Number(overwrite.allowPermissions || 0);
+      const denyPermissions = Number(overwrite.denyPermissions || 0);
+      if (
+        !validProfileIds.has(profileId) ||
+        !Number.isInteger(allowPermissions) ||
+        !Number.isInteger(denyPermissions) ||
+        allowPermissions < 0 ||
+        denyPermissions < 0 ||
+        (allowPermissions & ~CHANNEL_PERMISSION_MASK) !== 0 ||
+        (denyPermissions & ~CHANNEL_PERMISSION_MASK) !== 0 ||
+        (allowPermissions & denyPermissions) !== 0
+      ) {
+        throw new ApiError(400, "Üye için seçilen oda izinleri geçersiz.");
+      }
+      return { profileId, allowPermissions, denyPermissions };
+    });
 
     await db
       .delete(channelPermissionOverwrites)
@@ -168,6 +210,26 @@ export async function PUT(request: Request) {
         })),
       );
     }
+    await db
+      .delete(channelMemberPermissionOverwrites)
+      .where(eq(channelMemberPermissionOverwrites.channelId, channelId));
+    const activeMembers = normalizedMembers.filter(
+      (overwrite) => overwrite.allowPermissions !== 0 || overwrite.denyPermissions !== 0,
+    );
+    if (activeMembers.length) {
+      const now = new Date().toISOString();
+      await db.insert(channelMemberPermissionOverwrites).values(
+        activeMembers.map((overwrite) => ({
+          id: `${channelId}:${overwrite.profileId}`,
+          channelId,
+          profileId: overwrite.profileId,
+          allowPermissions: overwrite.allowPermissions,
+          denyPermissions: overwrite.denyPermissions,
+          updatedByProfileId: profile.id,
+          updatedAt: now,
+        })),
+      );
+    }
     await writeAudit(
       profile.id,
       "channel.permissions",
@@ -175,7 +237,7 @@ export async function PUT(request: Request) {
       `${active.length} rol geçersiz kılma`,
       serverId,
     );
-    return apiJson({ ok: true, overwrites: active });
+    return apiJson({ ok: true, overwrites: active, memberOverwrites: activeMembers });
   } catch (error) {
     return apiError(error);
   }

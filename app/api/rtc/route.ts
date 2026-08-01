@@ -20,7 +20,7 @@ type SignalPayload = {
   serverId?: string;
   channelId?: string;
   recipientProfileId?: string;
-  type?: "offer" | "answer" | "ice";
+  type?: "offer" | "answer" | "ice" | "sound";
   payload?: unknown;
 };
 
@@ -85,7 +85,13 @@ export async function POST(request: Request) {
     const body = await readJson<SignalPayload>(request, 32_768);
     const serverId = cleanText(body.serverId || DEFAULT_SERVER_ID, { max: 80 });
     const { db, profile } = await requireMember(identity, serverId);
-    await enforceRateLimit(request, "rtc-signal", identity.email, 240, 60_000);
+    await enforceRateLimit(
+      request,
+      body.type === "sound" ? "rtc-sound" : "rtc-signal",
+      identity.email,
+      body.type === "sound" ? 8 : 240,
+      body.type === "sound" ? 10_000 : 60_000,
+    );
     const channelId = cleanText(body.channelId, { max: 80 });
     await requireChannelPermission(
       profile,
@@ -94,7 +100,7 @@ export async function POST(request: Request) {
       channelId,
     );
     const recipientProfileId = cleanText(body.recipientProfileId, { max: 80 });
-    if (!["offer", "answer", "ice"].includes(body.type || "")) {
+    if (!["offer", "answer", "ice", "sound"].includes(body.type || "")) {
       return apiJson({ error: "Geçersiz WebRTC sinyali." }, { status: 400 });
     }
     if (recipientProfileId === profile.id) {
@@ -103,6 +109,14 @@ export async function POST(request: Request) {
     const payload = JSON.stringify(body.payload);
     if (!payload || payload.length > 24_000) {
       return apiJson({ error: "WebRTC sinyali çok büyük." }, { status: 413 });
+    }
+    if (body.type === "sound") {
+      const sound = typeof body.payload === "object" && body.payload
+        ? (body.payload as { name?: unknown }).name
+        : null;
+      if (!["pop", "chime", "spark"].includes(String(sound || ""))) {
+        return apiJson({ error: "Geçersiz ses tahtası efekti." }, { status: 400 });
+      }
     }
 
     const [voiceChannel] = await db

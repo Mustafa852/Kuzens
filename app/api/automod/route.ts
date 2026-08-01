@@ -28,6 +28,9 @@ type AutoModPayload = {
   blockInviteLinks?: boolean;
   blockDuplicateMessages?: boolean;
   maxMentions?: number;
+  blockedDomains?: string;
+  maxMessagesPerMinute?: number;
+  raidJoinLimit?: number;
   exemptChannelIds?: string[];
 };
 
@@ -72,6 +75,17 @@ export async function PUT(request: Request) {
     if (!Number.isFinite(maxMentions) || maxMentions < 1 || maxMentions > 50) {
       return apiJson({ error: "Etiket sınırı 1 ile 50 arasında olmalı." }, { status: 400 });
     }
+    const blockedDomains = cleanText(payload.blockedDomains || "", { min: 0, max: 2_000, multiline: true });
+    const domains = blockedDomains
+      .split(/[\n,]/)
+      .map((domain) => domain.trim().toLocaleLowerCase("en-US").replace(/^https?:\/\//, "").replace(/^www\./, "").split("/")[0])
+      .filter((domain) => /^(?:[a-z0-9-]+\.)+[a-z]{2,}$/i.test(domain));
+    if (domains.length > 100) return apiJson({ error: "En fazla 100 alan adı engellenebilir." }, { status: 400 });
+    const maxMessagesPerMinute = Math.round(Number(payload.maxMessagesPerMinute ?? 12));
+    const raidJoinLimit = Math.round(Number(payload.raidJoinLimit ?? 10));
+    if (maxMessagesPerMinute < 3 || maxMessagesPerMinute > 60 || raidJoinLimit < 3 || raidJoinLimit > 100) {
+      return apiJson({ error: "Flood veya raid sınırı geçersiz." }, { status: 400 });
+    }
     const allowedChannelIds = new Set(
       (
         await db
@@ -95,6 +109,9 @@ export async function PUT(request: Request) {
       blockInviteLinks: payload.blockInviteLinks !== false,
       blockDuplicateMessages: payload.blockDuplicateMessages !== false,
       maxMentions,
+      blockedDomains: domains.join("\n"),
+      maxMessagesPerMinute,
+      raidJoinLimit,
       exemptChannelIds: JSON.stringify(exemptChannelIds),
       updatedByProfileId: profile.id,
       updatedAt: now,
@@ -110,6 +127,9 @@ export async function PUT(request: Request) {
           blockInviteLinks: row.blockInviteLinks,
           blockDuplicateMessages: row.blockDuplicateMessages,
           maxMentions: row.maxMentions,
+          blockedDomains: row.blockedDomains,
+          maxMessagesPerMinute: row.maxMessagesPerMinute,
+          raidJoinLimit: row.raidJoinLimit,
           exemptChannelIds: row.exemptChannelIds,
           updatedByProfileId: row.updatedByProfileId,
           updatedAt: row.updatedAt,
@@ -129,6 +149,9 @@ export async function PUT(request: Request) {
         blockInviteLinks: row.blockInviteLinks,
         blockDuplicateMessages: row.blockDuplicateMessages,
         maxMentions: row.maxMentions,
+        blockedDomains: row.blockedDomains,
+        maxMessagesPerMinute: row.maxMessagesPerMinute,
+        raidJoinLimit: row.raidJoinLimit,
         exemptChannelIds,
       },
     });

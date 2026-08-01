@@ -1,10 +1,11 @@
-import { and, eq, sql } from "drizzle-orm";
-import { invites, memberRoles, serverBans, serverMembers } from "@/db/schema";
+import { and, eq, gt, sql } from "drizzle-orm";
+import { invites, memberRoles, serverAutoModerationSettings, serverBans, serverMembers } from "@/db/schema";
 import {
   DEFAULT_SERVER_ID,
   ensureMembership,
   requireMember,
   requireProfile,
+  writeAudit,
 } from "@/lib/community";
 import {
   apiError,
@@ -99,6 +100,26 @@ export async function POST(request: Request) {
         (invite!.serverId === DEFAULT_SERVER_ID && profile.isOwner)
       ) {
         return apiJson({ joined: true, existing: true });
+      }
+      const [autoMod] = await db
+        .select()
+        .from(serverAutoModerationSettings)
+        .where(eq(serverAutoModerationSettings.serverId, invite!.serverId))
+        .limit(1);
+      if (autoMod?.enabled && autoMod.raidJoinLimit > 0) {
+        const recentJoins = await db
+          .select({ id: serverMembers.id })
+          .from(serverMembers)
+          .where(
+            and(
+              eq(serverMembers.serverId, invite!.serverId),
+              gt(serverMembers.joinedAt, new Date(Date.now() - 60_000).toISOString()),
+            ),
+          );
+        if (recentJoins.length >= autoMod.raidJoinLimit) {
+          await writeAudit(profile.id, "automod.raid-block", invite!.id, `${recentJoins.length} katılım/dk`, invite!.serverId);
+          return apiJson({ error: "Toplu katılım koruması etkin. Birkaç dakika sonra tekrar dene." }, { status: 429 });
+        }
       }
       await ensureMembership(profile.id, invite!.serverId);
       await db

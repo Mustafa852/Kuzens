@@ -1,11 +1,13 @@
 import { and, asc, eq, gt, inArray, isNull, or } from "drizzle-orm";
 import {
   channels,
+  contentReports,
   channelPermissionOverwrites,
   channelNotificationSettings,
   channelReads,
   communityEvents,
   messageBookmarks,
+  messageAttachments,
   messageMentions,
   messageReactions,
   messageThreads,
@@ -34,18 +36,21 @@ import {
   readJson,
   requireIdentity,
 } from "@/lib/security";
+import { getUploads } from "@/lib/storage";
 
 type ChannelPayload = {
   action?: "reorder";
   id?: string;
   name?: string;
-  kind?: "text" | "voice";
+  kind?: "text" | "voice" | "forum" | "announcement";
+  categoryId?: string | null;
   serverId?: string;
   topic?: string;
   slowModeSeconds?: number;
   bitrate?: number;
   userLimit?: number;
   region?: string;
+  historyMode?: "all" | "since_join";
   orderedIds?: string[];
 };
 
@@ -127,7 +132,23 @@ export async function POST(request: Request) {
     await requirePermission(profile, PERMISSIONS.manageChannels, serverId);
     await enforceRateLimit(request, "channel-create", identity.email, 10, 60 * 60_000);
     const name = channelName(payload.name);
-    const kind: "text" | "voice" = payload.kind === "voice" ? "voice" : "text";
+    const kind = (["text", "voice", "forum", "announcement"] as const).includes(
+      payload.kind || "text",
+    )
+      ? (payload.kind || "text") as "text" | "voice" | "forum" | "announcement"
+      : "text";
+    const categoryId = payload.categoryId
+      ? cleanText(payload.categoryId, { max: 100 })
+      : null;
+    if (categoryId) {
+      const { channelCategories } = await import("@/db/schema");
+      const [category] = await db
+        .select({ id: channelCategories.id })
+        .from(channelCategories)
+        .where(and(eq(channelCategories.id, categoryId), eq(channelCategories.serverId, serverId)))
+        .limit(1);
+      if (!category) return apiJson({ error: "Kategori bulunamadı." }, { status: 404 });
+    }
     const bitrateLimit = await maxVoiceBitrate(db, serverId, profile.isOwner);
     const bitrate =
       kind === "voice" && Number.isInteger(payload.bitrate)
@@ -152,9 +173,11 @@ export async function POST(request: Request) {
       serverId,
       name,
       kind,
+      categoryId,
       bitrate,
       userLimit,
       region: kind === "voice" ? cleanText(payload.region || "auto", { max: 24 }) : "auto",
+      historyMode: payload.historyMode === "since_join" ? "since_join" as const : "all" as const,
       position: existing.length,
       createdAt: new Date().toISOString(),
     };
@@ -245,10 +268,25 @@ export async function PATCH(request: Request) {
     const region = cleanText(payload.region || existing.region || "auto", {
       max: 24,
     });
+    const categoryId = payload.categoryId === null
+      ? null
+      : payload.categoryId
+        ? cleanText(payload.categoryId, { max: 100 })
+        : existing.categoryId;
+    if (categoryId) {
+      const { channelCategories } = await import("@/db/schema");
+      const [category] = await db
+        .select({ id: channelCategories.id })
+        .from(channelCategories)
+        .where(and(eq(channelCategories.id, categoryId), eq(channelCategories.serverId, serverId)))
+        .limit(1);
+      if (!category) return apiJson({ error: "Kategori bulunamadı." }, { status: 404 });
+    }
+    const historyMode = payload.historyMode === "since_join" ? "since_join" : "all";
 
     await db
       .update(channels)
-      .set({ name, topic, slowModeSeconds, bitrate, userLimit, region })
+      .set({ name, topic, slowModeSeconds, bitrate, userLimit, region, categoryId, historyMode })
       .where(eq(channels.id, id));
     await writeAudit(
       profile.id,
@@ -266,6 +304,8 @@ export async function PATCH(request: Request) {
         bitrate,
         userLimit,
         region,
+        categoryId,
+        historyMode,
       },
     });
   } catch (error) {
@@ -316,9 +356,16 @@ export async function DELETE(request: Request) {
       await db.delete(messageThreads).where(inArray(messageThreads.id, threadIds));
     }
     if (messageIds.length) {
+      const attachmentRows = await db
+        .select()
+        .from(messageAttachments)
+        .where(inArray(messageAttachments.messageId, messageIds));
+      await Promise.all(attachmentRows.map((attachment) => getUploads().delete(attachment.storageKey).catch(() => undefined)));
+      await db.delete(messageAttachments).where(inArray(messageAttachments.messageId, messageIds));
       await db.delete(messageMentions).where(inArray(messageMentions.messageId, messageIds));
       await db.delete(messageReactions).where(inArray(messageReactions.messageId, messageIds));
       await db.delete(messageBookmarks).where(inArray(messageBookmarks.messageId, messageIds));
+      await db.delete(contentReports).where(and(eq(contentReports.targetType, "message"), inArray(contentReports.targetId, messageIds)));
     }
     await db
       .update(communityEvents)
@@ -331,6 +378,10 @@ export async function DELETE(request: Request) {
     await db
       .delete(channelPermissionOverwrites)
       .where(eq(channelPermissionOverwrites.channelId, id));
+    const { channelMemberPermissionOverwrites } = await import("@/db/schema");
+    await db
+      .delete(channelMemberPermissionOverwrites)
+      .where(eq(channelMemberPermissionOverwrites.channelId, id));
     await db.delete(messages).where(eq(messages.channelId, id));
     await db.delete(rtcSignals).where(eq(rtcSignals.channelId, id));
     await db.delete(channels).where(eq(channels.id, id));

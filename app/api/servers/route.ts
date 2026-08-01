@@ -3,14 +3,19 @@ import {
   auraMemberships,
   auditLogs,
   channels,
+  channelCategories,
+  channelMemberPermissionOverwrites,
   channelPermissionOverwrites,
   channelNotificationSettings,
   channelReads,
   communityEvents,
+  contentReports,
+  customEmojis,
   eventRsvps,
   invites,
   memberRoles,
   messageMentions,
+  messageAttachments,
   messageReactions,
   messageBookmarks,
   messageThreads,
@@ -49,6 +54,7 @@ import {
   requireIdentity,
 } from "@/lib/security";
 import { getDb } from "@/db";
+import { getUploads } from "@/lib/storage";
 
 type ServerPayload = {
   id?: string;
@@ -192,7 +198,7 @@ export async function PATCH(request: Request) {
     const name = cleanText(payload.name, { min: 2, max: 40 });
     const icon = cleanText(payload.icon || name.slice(0, 2), { min: 1, max: 3 });
     const description = cleanText(payload.description || "", { max: 240 });
-    const defaultNotificationLevel =
+    const defaultNotificationLevel: "all" | "mentions" =
       payload.defaultNotificationLevel === "all" ? "all" : "mentions";
     const explicitContentFilter = payload.explicitContentFilter !== false;
     const preferredLocale = ["tr", "en"].includes(payload.preferredLocale || "")
@@ -212,7 +218,7 @@ export async function PATCH(request: Request) {
           and(
             eq(channels.id, systemChannelId),
             eq(channels.serverId, id),
-            eq(channels.kind, "text"),
+            inArray(channels.kind, ["text", "forum", "announcement"]),
           ),
         )
         .limit(1);
@@ -288,6 +294,9 @@ export async function DELETE(request: Request) {
         await db.delete(messageThreads).where(inArray(messageThreads.id, threadIds));
       }
       if (messageIds.length) {
+        const attachmentRows = await db.select().from(messageAttachments).where(inArray(messageAttachments.messageId, messageIds));
+        await Promise.all(attachmentRows.map((attachment) => getUploads().delete(attachment.storageKey).catch(() => undefined)));
+        await db.delete(messageAttachments).where(inArray(messageAttachments.messageId, messageIds));
         await db.delete(messageMentions).where(inArray(messageMentions.messageId, messageIds));
         await db.delete(messageReactions).where(inArray(messageReactions.messageId, messageIds));
         await db.delete(messageBookmarks).where(inArray(messageBookmarks.messageId, messageIds));
@@ -298,9 +307,17 @@ export async function DELETE(request: Request) {
       await db
         .delete(channelPermissionOverwrites)
         .where(inArray(channelPermissionOverwrites.channelId, channelIds));
+      await db
+        .delete(channelMemberPermissionOverwrites)
+        .where(inArray(channelMemberPermissionOverwrites.channelId, channelIds));
       await db.delete(channelReads).where(inArray(channelReads.channelId, channelIds));
       await db.delete(messages).where(inArray(messages.channelId, channelIds));
     }
+    const emojiRows = await db.select().from(customEmojis).where(eq(customEmojis.serverId, id));
+    await Promise.all(emojiRows.map((emoji) => getUploads().delete(emoji.storageKey).catch(() => undefined)));
+    await db.delete(customEmojis).where(eq(customEmojis.serverId, id));
+    await db.delete(contentReports).where(eq(contentReports.serverId, id));
+    await db.delete(channelCategories).where(eq(channelCategories.serverId, id));
     const eventRows = await db
       .select({ id: communityEvents.id })
       .from(communityEvents)

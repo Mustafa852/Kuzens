@@ -25,16 +25,37 @@ export const channels = sqliteTable(
     id: text("id").primaryKey(),
     serverId: text("server_id").notNull(),
     name: text("name").notNull(),
-    kind: text("kind", { enum: ["text", "voice"] }).notNull(),
+    kind: text("kind", {
+      enum: ["text", "voice", "forum", "announcement"],
+    }).notNull(),
+    categoryId: text("category_id"),
     topic: text("topic"),
     slowModeSeconds: integer("slow_mode_seconds").notNull().default(0),
     bitrate: integer("bitrate").notNull().default(64_000),
     userLimit: integer("user_limit").notNull().default(0),
     region: text("region").notNull().default("auto"),
+    historyMode: text("history_mode", { enum: ["all", "since_join"] })
+      .notNull()
+      .default("all"),
     position: integer("position").notNull().default(0),
     createdAt: text("created_at").notNull(),
   },
   (table) => [index("channels_server_idx").on(table.serverId)],
+);
+
+export const channelCategories = sqliteTable(
+  "channel_categories",
+  {
+    id: text("id").primaryKey(),
+    serverId: text("server_id").notNull(),
+    name: text("name").notNull(),
+    position: integer("position").notNull().default(0),
+    collapsedByDefault: integer("collapsed_by_default", { mode: "boolean" })
+      .notNull()
+      .default(false),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [index("channel_categories_server_idx").on(table.serverId, table.position)],
 );
 
 export const messages = sqliteTable(
@@ -47,6 +68,7 @@ export const messages = sqliteTable(
     authorTag: text("author_tag").notNull(),
     content: text("content").notNull(),
     replyToId: text("reply_to_id"),
+    forwardedFromId: text("forwarded_from_id"),
     pinned: integer("pinned", { mode: "boolean" }).notNull().default(false),
     editedAt: text("edited_at"),
     deletedAt: text("deleted_at"),
@@ -68,6 +90,12 @@ export const profiles = sqliteTable(
     bio: text("bio").notNull().default(""),
     customStatus: text("custom_status").notNull().default(""),
     avatarKey: text("avatar_key"),
+    bannerKey: text("banner_key"),
+    profileColor: text("profile_color").notNull().default("#8b5cf6"),
+    statusExpiresAt: text("status_expires_at"),
+    allowFriendRequests: integer("allow_friend_requests", { mode: "boolean" })
+      .notNull()
+      .default(true),
     presenceStatus: text("presence_status", {
       enum: ["online", "idle", "dnd", "invisible"],
     })
@@ -158,6 +186,26 @@ export const channelPermissionOverwrites = sqliteTable(
   ],
 );
 
+export const channelMemberPermissionOverwrites = sqliteTable(
+  "channel_member_permission_overwrites",
+  {
+    id: text("id").primaryKey(),
+    channelId: text("channel_id").notNull(),
+    profileId: text("profile_id").notNull(),
+    allowPermissions: integer("allow_permissions").notNull().default(0),
+    denyPermissions: integer("deny_permissions").notNull().default(0),
+    updatedByProfileId: text("updated_by_profile_id").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("channel_member_overwrites_channel_profile_idx").on(
+      table.channelId,
+      table.profileId,
+    ),
+    index("channel_member_overwrites_channel_idx").on(table.channelId),
+  ],
+);
+
 export const serverMembers = sqliteTable(
   "server_members",
   {
@@ -167,6 +215,10 @@ export const serverMembers = sqliteTable(
     lastSeenAt: text("last_seen_at").notNull(),
     voiceChannelId: text("voice_channel_id"),
     sharing: integer("sharing", { mode: "boolean" }).notNull().default(false),
+    nickname: text("nickname"),
+    timeoutUntil: text("timeout_until"),
+    serverMuted: integer("server_muted", { mode: "boolean" }).notNull().default(false),
+    serverDeafened: integer("server_deafened", { mode: "boolean" }).notNull().default(false),
     joinedAt: text("joined_at").notNull(),
   },
   (table) => [
@@ -227,7 +279,7 @@ export const rtcSignals = sqliteTable(
     channelId: text("channel_id").notNull(),
     senderProfileId: text("sender_profile_id").notNull(),
     recipientProfileId: text("recipient_profile_id").notNull(),
-    type: text("type", { enum: ["offer", "answer", "ice"] }).notNull(),
+    type: text("type", { enum: ["offer", "answer", "ice", "sound"] }).notNull(),
     payload: text("payload").notNull(),
     createdAt: text("created_at").notNull(),
   },
@@ -280,6 +332,9 @@ export const messageMentions = sqliteTable(
     id: text("id").primaryKey(),
     messageId: text("message_id").notNull(),
     profileId: text("profile_id").notNull(),
+    kind: text("kind", { enum: ["mention", "reply", "role", "everyone"] })
+      .notNull()
+      .default("mention"),
     readAt: text("read_at"),
     createdAt: text("created_at").notNull(),
   },
@@ -289,6 +344,49 @@ export const messageMentions = sqliteTable(
       table.profileId,
     ),
     index("message_mentions_profile_read_idx").on(table.profileId, table.readAt),
+  ],
+);
+
+export const messageAttachments = sqliteTable(
+  "message_attachments",
+  {
+    id: text("id").primaryKey(),
+    messageId: text("message_id").notNull(),
+    uploaderProfileId: text("uploader_profile_id").notNull(),
+    storageKey: text("storage_key").notNull(),
+    fileName: text("file_name").notNull(),
+    contentType: text("content_type").notNull(),
+    size: integer("size").notNull(),
+    width: integer("width"),
+    height: integer("height"),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [
+    index("message_attachments_message_idx").on(table.messageId),
+    index("message_attachments_uploader_idx").on(table.uploaderProfileId),
+  ],
+);
+
+export const contentReports = sqliteTable(
+  "content_reports",
+  {
+    id: text("id").primaryKey(),
+    serverId: text("server_id").notNull(),
+    reporterProfileId: text("reporter_profile_id").notNull(),
+    targetType: text("target_type", { enum: ["message", "profile"] }).notNull(),
+    targetId: text("target_id").notNull(),
+    reason: text("reason").notNull(),
+    details: text("details").notNull().default(""),
+    status: text("status", { enum: ["open", "reviewed", "closed"] })
+      .notNull()
+      .default("open"),
+    reviewedByProfileId: text("reviewed_by_profile_id"),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [
+    index("content_reports_server_status_idx").on(table.serverId, table.status),
+    index("content_reports_reporter_idx").on(table.reporterProfileId, table.createdAt),
   ],
 );
 
@@ -393,6 +491,10 @@ export const directConversations = sqliteTable(
   "direct_conversations",
   {
     id: text("id").primaryKey(),
+    name: text("name"),
+    iconKey: text("icon_key"),
+    isGroup: integer("is_group", { mode: "boolean" }).notNull().default(false),
+    ownerProfileId: text("owner_profile_id"),
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at").notNull(),
   },
@@ -423,6 +525,7 @@ export const directMessages = sqliteTable(
     conversationId: text("conversation_id").notNull(),
     authorProfileId: text("author_profile_id").notNull(),
     content: text("content").notNull(),
+    pinned: integer("pinned", { mode: "boolean" }).notNull().default(false),
     editedAt: text("edited_at"),
     deletedAt: text("deleted_at"),
     createdAt: text("created_at").notNull(),
@@ -463,6 +566,24 @@ export const directConversationReads = sqliteTable(
       table.profileId,
     ),
     index("direct_reads_profile_idx").on(table.profileId, table.lastReadAt),
+  ],
+);
+
+export const directConversationSettings = sqliteTable(
+  "direct_conversation_settings",
+  {
+    id: text("id").primaryKey(),
+    conversationId: text("conversation_id").notNull(),
+    profileId: text("profile_id").notNull(),
+    mutedUntil: text("muted_until"),
+    pinned: integer("pinned", { mode: "boolean" }).notNull().default(false),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("direct_settings_conversation_profile_idx").on(
+      table.conversationId,
+      table.profileId,
+    ),
   ],
 );
 
@@ -583,10 +704,29 @@ export const serverAutoModerationSettings = sqliteTable(
       .notNull()
       .default(true),
     maxMentions: integer("max_mentions").notNull().default(8),
+    blockedDomains: text("blocked_domains").notNull().default(""),
+    maxMessagesPerMinute: integer("max_messages_per_minute").notNull().default(12),
+    raidJoinLimit: integer("raid_join_limit").notNull().default(10),
     exemptChannelIds: text("exempt_channel_ids").notNull().default("[]"),
     updatedByProfileId: text("updated_by_profile_id").notNull(),
     updatedAt: text("updated_at").notNull(),
   },
+);
+
+export const customEmojis = sqliteTable(
+  "custom_emojis",
+  {
+    id: text("id").primaryKey(),
+    serverId: text("server_id").notNull(),
+    name: text("name").notNull(),
+    storageKey: text("storage_key").notNull(),
+    uploaderProfileId: text("uploader_profile_id").notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("custom_emojis_server_name_idx").on(table.serverId, table.name),
+    index("custom_emojis_server_idx").on(table.serverId),
+  ],
 );
 
 export const messageBookmarks = sqliteTable(

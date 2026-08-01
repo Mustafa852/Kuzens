@@ -3,6 +3,8 @@ import {
   channelNotificationSettings,
   channels,
   friendships,
+  memberRoles,
+  messageAttachments,
   messageMentions,
   messageReactions,
   messages,
@@ -12,6 +14,7 @@ import {
   pollVotes,
   threadMessages,
   profiles,
+  roles,
   serverMembers,
 } from "@/db/schema";
 import {
@@ -33,6 +36,7 @@ import {
 } from "@/lib/security";
 import { autoModError, checkAutoModeration } from "@/lib/automod";
 import { avatarUrlFor } from "@/lib/profile-view";
+import { getUploads } from "@/lib/storage";
 
 type MessagePayload = {
   id?: string;
@@ -51,7 +55,7 @@ async function decorateMessages(
 ) {
   if (!rows.length) return [];
   const ids = rows.map((message) => message.id);
-  const [reactionRows, mentionRows, blockedRows] = await Promise.all([
+  const [reactionRows, mentionRows, attachmentRows, blockedRows] = await Promise.all([
     db.select().from(messageReactions).where(inArray(messageReactions.messageId, ids)),
     db
       .select({ messageId: messageMentions.messageId })
@@ -62,6 +66,10 @@ async function decorateMessages(
           eq(messageMentions.profileId, profileId),
         ),
       ),
+    db
+      .select()
+      .from(messageAttachments)
+      .where(inArray(messageAttachments.messageId, ids)),
     db
       .select({
         requesterProfileId: friendships.requesterProfileId,
@@ -162,6 +170,19 @@ async function decorateMessages(
       blockedAuthor: Boolean(
         message.authorProfileId && blockedProfileIds.has(message.authorProfileId),
       ),
+      attachments: attachmentRows
+        .filter((attachment) => attachment.messageId === message.id)
+        .map((attachment) => ({
+          id: attachment.id,
+          messageId: attachment.messageId,
+          fileName: attachment.fileName,
+          contentType: attachment.contentType,
+          size: attachment.size,
+          width: attachment.width,
+          height: attachment.height,
+          createdAt: attachment.createdAt,
+          url: `/api/media?attachment=${encodeURIComponent(attachment.id)}`,
+        })),
       poll: poll
         ? {
             id: poll.id,
@@ -211,7 +232,7 @@ async function requireTextChannel(
       and(
         eq(channels.id, channelId),
         eq(channels.serverId, serverId),
-        eq(channels.kind, "text"),
+        inArray(channels.kind, ["text", "voice", "forum", "announcement"]),
       ),
     )
     .limit(1);
@@ -265,6 +286,14 @@ export async function GET(request: Request) {
       serverId,
       channelId,
     );
+    const [membership] = await db
+      .select({ joinedAt: serverMembers.joinedAt })
+      .from(serverMembers)
+      .where(and(eq(serverMembers.serverId, serverId), eq(serverMembers.profileId, profile.id)))
+      .limit(1);
+    const historyBoundary = channel.historyMode === "since_join" && !profile.isOwner
+      ? membership?.joinedAt || new Date().toISOString()
+      : null;
 
     const after = url.searchParams.get("after");
     if (after) {
@@ -278,7 +307,12 @@ export async function GET(request: Request) {
         .where(
           and(
             eq(messages.channelId, channelId),
-            gt(messages.createdAt, afterDate.toISOString()),
+            gt(
+              messages.createdAt,
+              historyBoundary && historyBoundary > afterDate.toISOString()
+                ? historyBoundary
+                : afterDate.toISOString(),
+            ),
             lte(messages.createdAt, syncBoundary),
           ),
         )
@@ -293,7 +327,7 @@ export async function GET(request: Request) {
     const latest = await db
       .select()
       .from(messages)
-      .where(eq(messages.channelId, channelId))
+      .where(historyBoundary ? and(eq(messages.channelId, channelId), gt(messages.createdAt, historyBoundary)) : eq(messages.channelId, channelId))
       .orderBy(desc(messages.createdAt))
       .limit(100);
     return apiJson({
@@ -314,6 +348,14 @@ export async function POST(request: Request) {
     const { db, profile } = await requireMember(identity, serverId);
     await enforceRateLimit(request, "message-send", identity.email, 15, 10_000);
     const channelId = cleanText(payload.channelId, { max: 80 });
+    const [membership] = await db
+      .select({ timeoutUntil: serverMembers.timeoutUntil })
+      .from(serverMembers)
+      .where(and(eq(serverMembers.serverId, serverId), eq(serverMembers.profileId, profile.id)))
+      .limit(1);
+    if (membership?.timeoutUntil && membership.timeoutUntil > new Date().toISOString()) {
+      return apiJson({ error: "Timeout süren bitene kadar mesaj gönderemezsin." }, { status: 403 });
+    }
     const content = cleanText(payload.content, { max: 2_000, multiline: true });
     const channel = await requireTextChannel(db, channelId, serverId);
     if (!channel) {
@@ -411,6 +453,10 @@ export async function POST(request: Request) {
     );
     const memberIds = new Set(membershipRows.map((item) => item.profileId));
     const profileRows = await db.select().from(profiles);
+    const [roleRows, assignmentRows] = await Promise.all([
+      db.select().from(roles).where(eq(roles.serverId, serverId)),
+      db.select().from(memberRoles).where(eq(memberRoles.serverId, serverId)),
+    ]);
     const blockedProfileIds = await blockedProfileIdsFor(db, profile.id);
     const mentionedUsernames = new Set(
       Array.from(content.matchAll(/@([a-z0-9_]{3,24})\b/gi)).map((match) =>
@@ -418,6 +464,22 @@ export async function POST(request: Request) {
       ),
     );
     const massMention = content.includes("@everyone") || content.includes("@here");
+    const mentionedRoleIds = new Set(
+      roleRows
+        .filter((role) => {
+          const token = role.name
+            .toLocaleLowerCase("tr-TR")
+            .replace(/\s+/g, "-")
+            .replace(/[^a-z0-9ğüşöçı_-]/g, "");
+          return token && content.toLocaleLowerCase("tr-TR").includes(`@${token}`);
+        })
+        .map((role) => role.id),
+    );
+    const roleMentionedTags = new Set(
+      assignmentRows
+        .filter((assignment) => mentionedRoleIds.has(assignment.roleId))
+        .map((assignment) => assignment.memberTag.toLocaleLowerCase("en-US")),
+    );
     const targets = profileRows.filter(
       (item) =>
         item.id !== profile.id &&
@@ -426,6 +488,7 @@ export async function POST(request: Request) {
         (
           massMention ||
           mentionedUsernames.has(item.username) ||
+          roleMentionedTags.has(`@${item.username}`.toLocaleLowerCase("en-US")) ||
           item.id === replyTargetProfileId ||
           allNotificationIds.has(item.id)
         ),
@@ -438,6 +501,13 @@ export async function POST(request: Request) {
             id: `${message.id}:${target.id}`,
             messageId: message.id,
             profileId: target.id,
+            kind: massMention
+              ? "everyone" as const
+              : target.id === replyTargetProfileId
+                ? "reply" as const
+                : roleMentionedTags.has(`@${target.username}`.toLocaleLowerCase("en-US"))
+                  ? "role" as const
+                  : "mention" as const,
             readAt: null,
             createdAt: message.createdAt,
           })),
@@ -607,6 +677,10 @@ export async function DELETE(request: Request) {
       return apiJson({ error: "Bu mesajı silemezsin." }, { status: 403 });
     }
     const deletedAt = new Date().toISOString();
+    const attachmentRows = await db
+      .select()
+      .from(messageAttachments)
+      .where(eq(messageAttachments.messageId, id));
     await db
       .update(messages)
       .set({ content: "Mesaj silindi.", deletedAt, editedAt: null })
@@ -614,7 +688,9 @@ export async function DELETE(request: Request) {
     await Promise.all([
       db.delete(messageMentions).where(eq(messageMentions.messageId, id)),
       db.delete(messageReactions).where(eq(messageReactions.messageId, id)),
+      db.delete(messageAttachments).where(eq(messageAttachments.messageId, id)),
     ]);
+    await Promise.all(attachmentRows.map((attachment) => getUploads().delete(attachment.storageKey).catch(() => undefined)));
     await writeAudit(profile.id, "message.delete", id, undefined, serverId);
     return apiJson({ ok: true, deletedAt });
   } catch (error) {
