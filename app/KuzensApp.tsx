@@ -437,6 +437,43 @@ const defaultPreferences: AppPreferences = {
   autoGainControl: true,
 };
 
+type VoiceProcessingStatus = {
+  echoCancellation: boolean;
+  noiseSuppression: boolean;
+  autoGainControl: boolean;
+  voiceIsolation: boolean;
+};
+
+function audioConstraintsFor(preferences: AppPreferences): MediaTrackConstraints {
+  const supported = navigator.mediaDevices.getSupportedConstraints() as MediaTrackSupportedConstraints & {
+    voiceIsolation?: boolean;
+  };
+  const constraints = {
+    ...(preferences.inputDeviceId
+      ? { deviceId: { exact: preferences.inputDeviceId } }
+      : {}),
+    echoCancellation: preferences.echoCancellation,
+    noiseSuppression: preferences.noiseSuppression,
+    autoGainControl: preferences.autoGainControl,
+  } as MediaTrackConstraints & { voiceIsolation?: boolean };
+  if (supported.voiceIsolation) {
+    constraints.voiceIsolation = preferences.noiseSuppression;
+  }
+  return constraints;
+}
+
+function processingStatusFor(track?: MediaStreamTrack | null): VoiceProcessingStatus {
+  const settings = (track?.getSettings() || {}) as MediaTrackSettings & {
+    voiceIsolation?: boolean;
+  };
+  return {
+    echoCancellation: settings.echoCancellation === true,
+    noiseSuppression: settings.noiseSuppression === true,
+    autoGainControl: settings.autoGainControl === true,
+    voiceIsolation: settings.voiceIsolation === true,
+  };
+}
+
 type ContextMenuState = {
   x: number;
   y: number;
@@ -1128,10 +1165,13 @@ export function KuzensApp() {
   const [remoteStreams, setRemoteStreams] = useState<Record<string, MediaStream>>({});
   const [speakingMembers, setSpeakingMembers] = useState<Set<string>>(() => new Set());
   const [connectionQuality, setConnectionQuality] = useState<"good" | "fair" | "poor">("good");
+  const [voiceProcessingStatus, setVoiceProcessingStatus] = useState<VoiceProcessingStatus>(() => processingStatusFor());
+  const [microphoneLevel, setMicrophoneLevel] = useState(0);
   const [cameraEnabled, setCameraEnabled] = useState(false);
   const [voiceTextDraft, setVoiceTextDraft] = useState("");
   const [pendingAttachments, setPendingAttachments] = useState<File[]>([]);
   const [installPrompt, setInstallPrompt] = useState<Event | null>(null);
+  const [installedApp, setInstalledApp] = useState(false);
   const voiceStream = useRef<MediaStream | null>(null);
   const displayStream = useRef<MediaStream | null>(null);
   const previewVideo = useRef<HTMLVideoElement | null>(null);
@@ -1575,7 +1615,10 @@ export function KuzensApp() {
 
   useEffect(() => {
     if (!voiceConnected) {
-      window.queueMicrotask(() => setSpeakingMembers(new Set()));
+      window.queueMicrotask(() => {
+        setSpeakingMembers(new Set());
+        setMicrophoneLevel(0);
+      });
       return;
     }
     const AudioContextClass = window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
@@ -1602,6 +1645,9 @@ export function KuzensApp() {
           item.analyser.getByteFrequencyData(item.data);
           const average = item.data.reduce((sum, value) => sum + value, 0) / Math.max(1, item.data.length);
           if (average > 13) next.add(item.id);
+          if (item.id === profile?.id) {
+            setMicrophoneLevel(Math.min(100, Math.max(0, Math.round((average - 3) * 4))));
+          }
         }
         setSpeakingMembers(next);
         lastUpdate = time;
@@ -1717,16 +1763,27 @@ export function KuzensApp() {
     if ("serviceWorker" in navigator) {
       navigator.serviceWorker.register("/sw.js").catch(() => undefined);
     }
+    const standaloneQuery = window.matchMedia("(display-mode: standalone)");
+    const syncInstalledState = () => {
+      const iosStandalone = Boolean((navigator as Navigator & { standalone?: boolean }).standalone);
+      setInstalledApp(standaloneQuery.matches || iosStandalone);
+    };
     const captureInstall = (event: Event) => {
       event.preventDefault();
       setInstallPrompt(event);
     };
-    const installed = () => setInstallPrompt(null);
+    const installed = () => {
+      setInstallPrompt(null);
+      setInstalledApp(true);
+    };
+    syncInstalledState();
     window.addEventListener("beforeinstallprompt", captureInstall);
     window.addEventListener("appinstalled", installed);
+    standaloneQuery.addEventListener?.("change", syncInstalledState);
     return () => {
       window.removeEventListener("beforeinstallprompt", captureInstall);
       window.removeEventListener("appinstalled", installed);
+      standaloneQuery.removeEventListener?.("change", syncInstalledState);
     };
   }, []);
 
@@ -2227,10 +2284,63 @@ export function KuzensApp() {
     setSharing(false);
     setCameraEnabled(false);
     setPttPressed(false);
+    setMicrophoneLevel(0);
+    setVoiceProcessingStatus(processingStatusFor());
     peerConnections.current.forEach((_, profileId) => closePeer(profileId));
     setVoiceConnected(false);
     setConnectedVoiceChannelId(null);
     if (showToast) setToast({ text: "Sesli odadan ayrıldın." });
+  }
+
+  async function replaceMicrophoneInput(nextPreferences: AppPreferences) {
+    const replacement = await navigator.mediaDevices.getUserMedia({
+      audio: audioConstraintsFor(nextPreferences),
+    });
+    const nextTrack = replacement.getAudioTracks()[0];
+    if (!nextTrack) throw new Error("Mikrofon ses yolu oluşturulamadı.");
+    nextTrack.enabled = nextPreferences.pushToTalk ? pttPressed : !muted;
+    await Promise.all(
+      Array.from(peerConnections.current.values()).map(async (connection) => {
+        const sender = connection.getSenders().find((item) => item.track?.kind === "audio");
+        if (sender) await sender.replaceTrack(nextTrack);
+      }),
+    );
+    if (voiceStream.current) {
+      for (const track of voiceStream.current.getAudioTracks()) {
+        voiceStream.current.removeTrack(track);
+        track.stop();
+      }
+      voiceStream.current.addTrack(nextTrack);
+    } else {
+      voiceStream.current = replacement;
+    }
+    setVoiceProcessingStatus(processingStatusFor(nextTrack));
+  }
+
+  async function toggleCleanVoice() {
+    const enabled = !(preferences.echoCancellation && preferences.noiseSuppression);
+    const previous = preferences;
+    const nextPreferences: AppPreferences = {
+      ...preferences,
+      echoCancellation: enabled,
+      noiseSuppression: enabled,
+      autoGainControl: enabled ? true : preferences.autoGainControl,
+    };
+    setPreferences(nextPreferences);
+    try {
+      if (voiceConnected && canSpeakInConnectedVoice) {
+        await replaceMicrophoneInput(nextPreferences);
+      }
+      setToast({
+        text: enabled
+          ? "Temiz Ses açıldı: gürültü ve yankı engelleme etkin."
+          : "Temiz Ses kapatıldı.",
+        tone: "success",
+      });
+    } catch {
+      setPreferences(previous);
+      setToast({ text: "Mikrofon işleme ayarı uygulanamadı.", tone: "danger" });
+    }
   }
 
   async function joinVoice(channel: Channel) {
@@ -2256,16 +2366,10 @@ export function KuzensApp() {
       } else if (!stream || !stream.getAudioTracks().length) {
         stream?.getTracks().forEach((track) => track.stop());
         stream = await navigator.mediaDevices.getUserMedia({
-          audio: {
-            ...(preferences.inputDeviceId
-              ? { deviceId: { exact: preferences.inputDeviceId } }
-              : {}),
-            echoCancellation: preferences.echoCancellation,
-            noiseSuppression: preferences.noiseSuppression,
-            autoGainControl: preferences.autoGainControl,
-          },
+          audio: audioConstraintsFor(preferences),
         });
         voiceStream.current = stream;
+        setVoiceProcessingStatus(processingStatusFor(stream.getAudioTracks()[0]));
       }
       const presence = await apiFetch("/api/presence", {
         method: "POST",
@@ -3632,13 +3736,26 @@ export function KuzensApp() {
   }
 
   async function installKuzens() {
+    if (installedApp) {
+      setToast({ text: "Kuzens zaten uygulama olarak çalışıyor.", tone: "success" });
+      return;
+    }
     const promptEvent = installPrompt as Event & { prompt?: () => Promise<void>; userChoice?: Promise<{ outcome: string }> };
     if (!promptEvent.prompt) {
-      setToast({ text: "Tarayıcı menüsündeki ‘Uygulamayı yükle’ seçeneğini kullanabilirsin." });
+      const isAppleMobile = /iphone|ipad|ipod/i.test(navigator.userAgent);
+      setToast({
+        text: isAppleMobile
+          ? "Safari’de Paylaş → Ana Ekrana Ekle yolunu kullan."
+          : "Tarayıcı menüsündeki ‘Uygulamayı yükle’ seçeneğini kullanabilirsin.",
+      });
       return;
     }
     await promptEvent.prompt();
-    await promptEvent.userChoice;
+    const choice = await promptEvent.userChoice;
+    if (choice?.outcome === "accepted") {
+      setInstalledApp(true);
+      setToast({ text: "Kuzens uygulaması yüklendi.", tone: "success" });
+    }
     setInstallPrompt(null);
   }
 
@@ -3776,31 +3893,8 @@ export function KuzensApp() {
   async function savePreferences(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     try {
-      if (voiceConnected) {
-        const replacement = await navigator.mediaDevices.getUserMedia({
-          audio: {
-            ...(preferences.inputDeviceId
-              ? { deviceId: { exact: preferences.inputDeviceId } }
-              : {}),
-            echoCancellation: preferences.echoCancellation,
-            noiseSuppression: preferences.noiseSuppression,
-            autoGainControl: preferences.autoGainControl,
-          },
-        });
-        replacement.getAudioTracks().forEach((track) => {
-          track.enabled = preferences.pushToTalk ? pttPressed : !muted;
-        });
-        const nextTrack = replacement.getAudioTracks()[0];
-        if (nextTrack) {
-          await Promise.all(
-            Array.from(peerConnections.current.values()).map(async (connection) => {
-              const sender = connection.getSenders().find((item) => item.track?.kind === "audio");
-              if (sender) await sender.replaceTrack(nextTrack);
-            }),
-          );
-        }
-        voiceStream.current?.getTracks().forEach((track) => track.stop());
-        voiceStream.current = replacement;
+      if (voiceConnected && canSpeakInConnectedVoice) {
+        await replaceMicrophoneInput(preferences);
       }
       setModal(null);
       setToast({ text: "Görünüm ve ses tercihlerin bu cihazda kaydedildi.", tone: "success" });
@@ -5505,6 +5599,25 @@ export function KuzensApp() {
               <div className={`connection-grade quality-${connectionQuality}`}><i /> Bağlantı {connectionQuality === "good" ? "iyi" : connectionQuality === "fair" ? "orta" : "zayıf"}</div>
             </div>
 
+            <div className="voice-processing-strip" aria-label="Mikrofon işleme durumu">
+              <div>
+                <span className={voiceProcessingStatus.noiseSuppression ? "active" : ""}>Gürültü engelleme</span>
+                <span className={voiceProcessingStatus.echoCancellation ? "active" : ""}>Yankı engelleme</span>
+                <span className={voiceProcessingStatus.voiceIsolation ? "active" : ""}>Ses yalıtımı</span>
+              </div>
+              <label title="Mikrofon giriş seviyesi">
+                <small>MİKROFON</small>
+                <i><b style={{ width: `${microphoneLevel}%` }} /></i>
+              </label>
+              <button
+                type="button"
+                className={preferences.echoCancellation && preferences.noiseSuppression ? "active" : ""}
+                onClick={() => void toggleCleanVoice()}
+              >
+                ✦ Temiz Ses {preferences.echoCancellation && preferences.noiseSuppression ? "açık" : "kapalı"}
+              </button>
+            </div>
+
             <div className="speaker-grid">
               {visibleVoiceMembers.map((member) => (
                 <article
@@ -5589,6 +5702,7 @@ export function KuzensApp() {
               </button>
               <button className={deafened ? "danger" : ""} onClick={() => setDeafened((value) => !value)}><span>◉</span>{deafened ? "Ses kapalı" : "Kulaklık"}</button>
               <button className={sharing ? "active" : ""} onClick={toggleShare}><span>▣</span>Ekran paylaş</button>
+              <button className={preferences.echoCancellation && preferences.noiseSuppression ? "active" : ""} onClick={() => void toggleCleanVoice()}><span>✦</span>Temiz Ses</button>
               <button className={cameraEnabled ? "active" : ""} onClick={() => void toggleCamera()}><span>◉</span>{cameraEnabled ? "Kamerayı kapat" : "Kamera"}</button>
               <button onClick={() => document.querySelector(".voice-stage")?.requestFullscreen?.()}><span>⛶</span>Tam ekran</button>
               <button className={voiceConnected ? "hangup" : "connect"} onClick={toggleVoice}><span>{voiceConnected ? "×" : "◖"}</span>{voiceConnected ? "Ayrıl" : "Bağlan"}</button>
@@ -7544,6 +7658,11 @@ export function KuzensApp() {
                   <i />
                 </label>
               </div>
+              <div className="voice-processing-summary">
+                <span className={preferences.noiseSuppression ? "active" : ""}>✦ Gürültü filtresi {preferences.noiseSuppression ? "açık" : "kapalı"}</span>
+                <span className={preferences.echoCancellation ? "active" : ""}>↻ Yankı kalkanı {preferences.echoCancellation ? "açık" : "kapalı"}</span>
+                {voiceConnected && <small>Değişiklikler kaydedildiğinde aktif görüşmeye anında uygulanır.</small>}
+              </div>
               {preferences.pushToTalk && (
                 <div className={`ptt-preview ${pttPressed ? "active" : ""}`}>
                   <kbd>BOŞLUK</kbd>
@@ -7553,9 +7672,9 @@ export function KuzensApp() {
             </section>
 
             <section className="preference-section install-section">
-              <div className="preference-heading"><span>MASAÜSTÜ UYGULAMASI</span><small>PWA · ücretsiz</small></div>
+              <div className="preference-heading"><span>MASAÜSTÜ VE TELEFON UYGULAMASI</span><small>{installedApp ? "Kurulu · aktif" : "PWA · ücretsiz"}</small></div>
               <div className="install-actions">
-                <button type="button" onClick={() => void installKuzens()}><span>⬇</span><strong>Kuzens’i yükle</strong><small>Başlat menüsü ve masaüstünden aç</small></button>
+                <button type="button" className={installedApp ? "installed" : ""} onClick={() => void installKuzens()}><span>{installedApp ? "✓" : "⬇"}</span><strong>{installedApp ? "Kuzens kurulu" : "Kuzens’i yükle"}</strong><small>{installedApp ? "Bağımsız uygulama modunda çalışıyor" : "Bilgisayar, telefon ve tabletine kur"}</small></button>
                 <button type="button" onClick={() => void enableBrowserNotifications()}><span>◉</span><strong>Bildirimleri aç</strong><small>Yalnızca açık izinle çalışır</small></button>
                 <a href="/api/data-export" download><span>↧</span><strong>Verilerimi indir</strong><small>KVKK uyumlu JSON dışa aktarımı</small></a>
               </div>

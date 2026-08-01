@@ -5,6 +5,9 @@ export default function manifest(): MetadataRoute.Manifest {
     name: "Kuzens",
     short_name: "Kuzens",
     description: "Arkadaşlarınla konuş, paylaş ve birlikte kal.",
+    lang: "tr",
+    dir: "ltr",
+    categories: ["social", "communication"],
     id: "/",
     start_url: "/",
     scope: "/",
@@ -12,6 +15,7 @@ export default function manifest(): MetadataRoute.Manifest {
     background_color: "#090a0f",
     theme_color: "#8b73ff",
     orientation: "any",
+    prefer_related_applications: false,
     icons: [
       {
         src: "/icon-192.png",

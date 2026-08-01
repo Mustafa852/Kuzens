@@ -109,6 +109,104 @@
 .voice-linked-chat form button { padding: 0 12px; border-radius: 0 7px 7px 0; color: white; background: #7650e8; }
 .voice-linked-chat form button:disabled { opacity: .45; }
 
+.voice-processing-strip {
+  align-items: center;
+  background: rgba(11, 10, 17, .72);
+  border: 1px solid rgba(255, 255, 255, .07);
+  border-radius: 12px;
+  display: flex;
+  gap: 12px;
+  margin: 0 0 12px;
+  padding: 9px 11px;
+}
+
+.voice-processing-strip > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.voice-processing-strip > div span,
+.voice-processing-summary span {
+  background: rgba(255, 255, 255, .045);
+  border: 1px solid rgba(255, 255, 255, .07);
+  border-radius: 999px;
+  color: #777287;
+  font-size: 9px;
+  padding: 5px 8px;
+}
+
+.voice-processing-strip > div span.active,
+.voice-processing-summary span.active {
+  background: rgba(64, 218, 159, .1);
+  border-color: rgba(64, 218, 159, .28);
+  color: #6ff0bd;
+}
+
+.voice-processing-strip > label {
+  align-items: center;
+  display: flex;
+  gap: 7px;
+  margin-left: auto;
+}
+
+.voice-processing-strip > label small {
+  color: #777287;
+  font-size: 8px;
+  letter-spacing: .08em;
+}
+
+.voice-processing-strip > label i {
+  background: rgba(255, 255, 255, .07);
+  border-radius: 99px;
+  display: block;
+  height: 5px;
+  overflow: hidden;
+  width: 70px;
+}
+
+.voice-processing-strip > label b {
+  background: linear-gradient(90deg, #54dba9, #b6ff84);
+  border-radius: inherit;
+  display: block;
+  height: 100%;
+  min-width: 2px;
+  transition: width .1s linear;
+}
+
+.voice-processing-strip > button {
+  background: rgba(139, 92, 246, .1);
+  border: 1px solid rgba(139, 92, 246, .24);
+  border-radius: 8px;
+  color: #aaa2b8;
+  font-size: 9px;
+  padding: 7px 9px;
+}
+
+.voice-processing-strip > button.active {
+  background: rgba(139, 92, 246, .2);
+  border-color: rgba(170, 135, 255, .48);
+  color: #e5dbff;
+}
+
+.voice-processing-summary {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 10px;
+}
+
+.voice-processing-summary small {
+  color: #827b8e;
+  font-size: 9px;
+}
+
+.install-actions button.installed {
+  border-color: rgba(64, 218, 159, .35);
+  background: rgba(64, 218, 159, .08);
+}
+
 .member-overwrite-editor { margin-top: 10px; }
 .member-overwrite-editor summary { padding: 10px; border: 1px solid rgba(255,255,255,.07); border-radius: 8px; color: #ddd7e8; cursor: pointer; font-size: 10px; }
 .member-overwrite-editor summary small { margin-left: 7px; color: var(--muted); }
@@ -140,6 +238,9 @@
   .soundboard > span { width: 100%; text-align: center; }
   .voice-linked-chat { width: calc(100% - 12px); }
   .speaker-card.camera-on .speaker-orbit { height: 120px; }
+  .voice-processing-strip { align-items: stretch; flex-direction: column; }
+  .voice-processing-strip > label { margin-left: 0; }
+  .voice-processing-strip > label i { flex: 1; width: auto; }
 }
 
 .app-shell button {

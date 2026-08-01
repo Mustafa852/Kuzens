@@ -1,4 +1,4 @@
-const CACHE = "kuzens-shell-v3";
+const CACHE = "kuzens-shell-v4";
 const SHELL = ["/favicon.svg", "/icon-192.png", "/icon-512.png", "/kuzens-loading-v1.webp", "/manifest.webmanifest"];
 
 self.addEventListener("install", (event) => {

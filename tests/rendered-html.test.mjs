@@ -298,6 +298,11 @@ test("supports advanced search, accessibility controls, and push-to-talk", () =>
   assert.match(appSource, /kuzens-preferences/);
   assert.match(appSource, /kuzens-drafts/);
   assert.match(appSource, /preferences\.pushToTalk/);
+  assert.match(appSource, /audioConstraintsFor/);
+  assert.match(appSource, /voiceIsolation/);
+  assert.match(appSource, /replaceMicrophoneInput/);
+  assert.match(appSource, /Temiz Ses/);
+  assert.match(appSource, /microphoneLevel/);
   assert.match(appSource, /event\.code === "Space"/);
   assert.match(appSource, /event\.altKey/);
   assert.match(appSource, /CTRL \/ ⌘ \+ SHIFT \+ M/);
@@ -423,7 +428,9 @@ test("provides a permissioned and persistent new-member guide", () => {
 
 test("ships an installable shell without caching private application data", () => {
   assert.match(manifestSource, /display:\s*"standalone"/);
+  assert.match(manifestSource, /categories:\s*\["social", "communication"\]/);
   assert.match(serviceWorkerSource, /skipWaiting/);
+  assert.match(appSource, /display-mode: standalone/);
   assert.match(serviceWorkerSource, /url\.pathname\.startsWith\("\/api\/"\)\) return/);
   assert.doesNotMatch(serviceWorkerSource, /cache\.put\([^\n]*\/api\//);
   assert.match(layoutSource, /favicon\.svg/);
