@@ -275,6 +275,13 @@ test("supports multi-role members and role-scoped channel access", () => {
   assert.match(channelPermissionsRoute, /denyPermissions/);
   assert.match(appSource, /Bir üyeye birden fazla rol verebilirsin/);
   assert.match(appSource, /Rol bazlı oda izinleri/);
+  assert.match(membersRoute, /position: role\.position/);
+  assert.match(membersRoute, /position: item\.position/);
+  assert.match(appSource, /const memberRoleGroups = useMemo/);
+  assert.match(appSource, /className="role-member-heading"/);
+  assert.match(appSource, /collapsedMemberRoles/);
+  assert.match(appStyles, /\.role-member-section/);
+  assert.match(appStyles, /\.role-member-heading/);
 });
 
 test("provides protected account deletion and the requested owner identity", () => {

@@ -94,11 +94,14 @@ export async function GET(request: Request) {
           timeoutUntil: membership?.timeoutUntil ?? null,
           serverMuted: membership?.serverMuted ?? false,
           serverDeafened: membership?.serverDeafened ?? false,
-          role: role ? { id: role.id, name: role.name, color: role.color } : null,
+          role: role
+            ? { id: role.id, name: role.name, color: role.color, position: role.position }
+            : null,
           roles: memberRoleRows.map((item) => ({
             id: item.id,
             name: item.name,
             color: item.color,
+            position: item.position,
           })),
         };
       })

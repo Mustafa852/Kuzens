@@ -211,8 +211,8 @@ type Member = {
   timeoutUntil?: string | null;
   serverMuted?: boolean;
   serverDeafened?: boolean;
-  role: { id: string; name: string; color: string } | null;
-  roles?: Array<{ id: string; name: string; color: string }>;
+  role: { id: string; name: string; color: string; position: number } | null;
+  roles?: Array<{ id: string; name: string; color: string; position: number }>;
 };
 
 type BannedMember = {
@@ -1140,6 +1140,9 @@ export function KuzensApp() {
   const [categories, setCategories] = useState<ChannelCategory[]>([]);
   const [customEmojis, setCustomEmojis] = useState<CustomEmoji[]>([]);
   const [collapsedCategories, setCollapsedCategories] = useState<Set<string>>(() => new Set());
+  const [collapsedMemberRoles, setCollapsedMemberRoles] = useState<Set<string>>(
+    () => new Set(),
+  );
   const [activeChannel, setActiveChannel] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [members, setMembers] = useState<Member[]>([]);
@@ -1402,7 +1405,47 @@ export function KuzensApp() {
   const uncategorizedVoiceChannels = voiceChannels.filter((channel) => !channel.categoryId);
   const favoriteChannels = channels.filter((channel) => favoriteChannelIds.has(channel.id));
   const onlineMembers = members.filter((member) => member.online);
-  const offlineMembers = members.filter((member) => !member.online);
+  const memberRoleGroups = useMemo(() => {
+    const groups = new Map<
+      string,
+      {
+        id: string;
+        name: string;
+        color: string;
+        position: number;
+        members: Member[];
+      }
+    >();
+
+    for (const member of members) {
+      const role =
+        member.role ||
+        ({
+          id: `${activeServerId || "server"}:unassigned`,
+          name: "Üyeler",
+          color: "#7c8498",
+          position: Number.MAX_SAFE_INTEGER,
+        } satisfies NonNullable<Member["role"]>);
+      const group = groups.get(role.id) || { ...role, members: [] };
+      group.members.push(member);
+      groups.set(role.id, group);
+    }
+
+    return Array.from(groups.values())
+      .map((group) => ({
+        ...group,
+        members: [...group.members].sort(
+          (left, right) =>
+            Number(right.online) - Number(left.online) ||
+            left.name.localeCompare(right.name, "tr", { sensitivity: "base" }),
+        ),
+      }))
+      .sort(
+        (left, right) =>
+          left.position - right.position ||
+          left.name.localeCompare(right.name, "tr", { sensitivity: "base" }),
+      );
+  }, [activeServerId, members]);
   const selfMember = members.find((member) => member.id === profile?.id);
   const voiceRoomMembers = members.filter(
     (member) => member.voiceChannelId === selected?.id,
@@ -5586,6 +5629,74 @@ export function KuzensApp() {
     );
   }
 
+  function toggleMemberRole(roleId: string) {
+    setCollapsedMemberRoles((current) => {
+      const next = new Set(current);
+      if (next.has(roleId)) next.delete(roleId);
+      else next.add(roleId);
+      return next;
+    });
+  }
+
+  function memberSidebarRow(member: Member) {
+    return (
+      <div
+        className={`member-row ${member.online ? "" : "offline"}`}
+        key={member.id}
+        role="button"
+        tabIndex={0}
+        onClick={() => openMemberProfile(member)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") openMemberProfile(member);
+        }}
+        onContextMenu={(event) => openContextMenu(event, { kind: "member", member })}
+        onTouchStart={(event) => startLongPress(event, { kind: "member", member })}
+        onTouchEnd={cancelLongPress}
+        onTouchMove={cancelLongPress}
+      >
+        <Avatar
+          name={member.name}
+          tone={toneFor(member.id)}
+          imageUrl={member.avatarUrl}
+          status={member.online ? member.presenceStatus || "online" : "offline"}
+        />
+        <span className="member-copy">
+          <strong style={{ color: member.role?.color || undefined }}>{member.name}</strong>
+          <small>{memberStatus(member)}</small>
+        </span>
+        {member.id !== profile?.id && !member.role?.id.endsWith(":owner") && (
+          <span className="member-moderation">
+            {canKickMembers && (
+              <button
+                onClick={(event) => {
+                  event.stopPropagation();
+                  void moderateMember(member, "kick");
+                }}
+                title="Topluluktan çıkar"
+                aria-label={`${member.name} kullanıcısını topluluktan çıkar`}
+              >
+                Çıkar
+              </button>
+            )}
+            {canBanMembers && (
+              <button
+                className="danger"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  void moderateMember(member, "ban");
+                }}
+                title="Yasakla"
+                aria-label={`${member.name} kullanıcısını yasakla`}
+              >
+                Yasakla
+              </button>
+            )}
+          </span>
+        )}
+      </div>
+    );
+  }
+
   return (
     <main
       className={`app-shell app-shell-v3 font-${preferences.fontSize} density-${preferences.density} ${preferences.highContrast ? "high-contrast" : ""} ${preferences.reducedMotion ? "reduce-motion" : ""}`}
@@ -6434,102 +6545,33 @@ export function KuzensApp() {
           <button onClick={copyInvite}>+ Davet et</button>
         </div>
         <div className="member-list">
-          <span className="member-group">ÇEVRİMİÇİ — {onlineMembers.length}</span>
-          {onlineMembers.map((member) => (
-            <div
-              className="member-row"
-              key={member.id}
-              role="button"
-              tabIndex={0}
-              onClick={() => openMemberProfile(member)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" || event.key === " ") openMemberProfile(member);
-              }}
-              onContextMenu={(event) =>
-                openContextMenu(event, { kind: "member", member })
-              }
-            >
-              <Avatar name={member.name} tone={toneFor(member.id)} imageUrl={member.avatarUrl} status={member.presenceStatus || "online"} />
-              <span className="member-copy"><strong>{member.name}</strong><small>{memberStatus(member)}</small></span>
-              {member.id !== profile?.id && !member.role?.id.endsWith(":owner") && (
-                <span className="member-moderation">
-                  {canKickMembers && (
-                    <button
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        void moderateMember(member, "kick");
-                      }}
-                      title="Topluluktan çıkar"
-                      aria-label={`${member.name} kullanıcısını topluluktan çıkar`}
-                    >
-                      Çıkar
-                    </button>
-                  )}
-                  {canBanMembers && (
-                    <button
-                      className="danger"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        void moderateMember(member, "ban");
-                      }}
-                      title="Yasakla"
-                      aria-label={`${member.name} kullanıcısını yasakla`}
-                    >
-                      Yasakla
-                    </button>
-                  )}
-                </span>
-              )}
-            </div>
-          ))}
-          <span className="member-group">ÇEVRİMDIŞI — {offlineMembers.length}</span>
-          {offlineMembers.map((member) => (
-            <div
-              className="member-row offline"
-              key={member.id}
-              role="button"
-              tabIndex={0}
-              onClick={() => openMemberProfile(member)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" || event.key === " ") openMemberProfile(member);
-              }}
-              onContextMenu={(event) =>
-                openContextMenu(event, { kind: "member", member })
-              }
-            >
-              <Avatar name={member.name} tone={toneFor(member.id)} imageUrl={member.avatarUrl} status="offline" />
-              <span className="member-copy"><strong>{member.name}</strong><small>{memberStatus(member)}</small></span>
-              {member.id !== profile?.id && !member.role?.id.endsWith(":owner") && (
-                <span className="member-moderation">
-                  {canKickMembers && (
-                    <button
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        void moderateMember(member, "kick");
-                      }}
-                      title="Topluluktan çıkar"
-                      aria-label={`${member.name} kullanıcısını topluluktan çıkar`}
-                    >
-                      Çıkar
-                    </button>
-                  )}
-                  {canBanMembers && (
-                    <button
-                      className="danger"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        void moderateMember(member, "ban");
-                      }}
-                      title="Yasakla"
-                      aria-label={`${member.name} kullanıcısını yasakla`}
-                    >
-                      Yasakla
-                    </button>
-                  )}
-                </span>
-              )}
-            </div>
-          ))}
+          {memberRoleGroups.map((group) => {
+            const collapsed = collapsedMemberRoles.has(group.id);
+            const activeCount = group.members.filter((member) => member.online).length;
+            return (
+              <section
+                className={`role-member-section ${collapsed ? "collapsed" : ""}`}
+                key={group.id}
+              >
+                <button
+                  type="button"
+                  className="role-member-heading"
+                  onClick={() => toggleMemberRole(group.id)}
+                  aria-expanded={!collapsed}
+                  aria-label={`${group.name} rolündeki üyeleri ${collapsed ? "göster" : "gizle"}`}
+                >
+                  <span className="role-member-chevron">⌄</span>
+                  <i style={{ backgroundColor: group.color }} />
+                  <strong>{group.name.toLocaleUpperCase("tr-TR")}</strong>
+                  <small>— {group.members.length}</small>
+                  {activeCount > 0 && <em>{activeCount} aktif</em>}
+                </button>
+                {!collapsed && (
+                  <div className="role-member-list">{group.members.map(memberSidebarRow)}</div>
+                )}
+              </section>
+            );
+          })}
           {canBanMembers && bannedMembers.length > 0 && (
             <>
               <span className="member-group">YASAKLILAR — {bannedMembers.length}</span>
