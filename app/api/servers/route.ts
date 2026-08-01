@@ -35,7 +35,6 @@ import {
   threadMessages,
 } from "@/db/schema";
 import {
-  DEFAULT_SERVER_ID,
   PERMISSIONS,
   defaultRoles,
   ensureMembership,
@@ -84,12 +83,20 @@ export async function GET(request: Request) {
     const identity = await requireIdentity(request);
     const profile = await requireProfile(identity);
     const db = getDb();
-    const memberships = await db
-      .select({ serverId: serverMembers.serverId })
-      .from(serverMembers)
-      .where(eq(serverMembers.profileId, profile.id));
-    const serverIds = new Set(memberships.map((item) => item.serverId));
-    if (profile.isOwner) serverIds.add(DEFAULT_SERVER_ID);
+    const [memberships, ownedServers] = await Promise.all([
+      db
+        .select({ serverId: serverMembers.serverId })
+        .from(serverMembers)
+        .where(eq(serverMembers.profileId, profile.id)),
+      db
+        .select({ id: servers.id })
+        .from(servers)
+        .where(eq(servers.ownerProfileId, profile.id)),
+    ]);
+    const serverIds = new Set([
+      ...memberships.map((item) => item.serverId),
+      ...ownedServers.map((item) => item.id),
+    ]);
     if (!serverIds.size) return apiJson({ servers: [] });
     const rows = await db
       .select()
@@ -254,9 +261,6 @@ export async function DELETE(request: Request) {
     await enforceRateLimit(request, "server-delete", identity.email, 3, 24 * 60 * 60_000);
     const payload = await readJson<ServerPayload>(request, 2_048);
     const id = cleanText(payload.id, { max: 80 });
-    if (id === DEFAULT_SERVER_ID) {
-      return apiJson({ error: "Ana Kuzens topluluğu silinemez." }, { status: 400 });
-    }
     const db = getDb();
     const [server] = await db
       .select()

@@ -1,5 +1,5 @@
 import { and, eq, gt, sql } from "drizzle-orm";
-import { invites, memberRoles, serverAutoModerationSettings, serverBans, serverMembers } from "@/db/schema";
+import { invites, memberRoles, serverAutoModerationSettings, serverBans, serverMembers, servers } from "@/db/schema";
 import {
   DEFAULT_SERVER_ID,
   ensureMembership,
@@ -40,12 +40,15 @@ export async function GET(request: Request) {
     if (!/^[A-Z2-9]{10}$/.test(code)) {
       return apiJson({ valid: false }, { status: 400 });
     }
-    const [invite] = await import("@/db").then(({ getDb }) =>
-      getDb().select().from(invites).where(eq(invites.code, code)).limit(1),
-    );
+    const { getDb } = await import("@/db");
+    const db = getDb();
+    const [invite] = await db.select().from(invites).where(eq(invites.code, code)).limit(1);
+    const [server] = invite
+      ? await db.select({ name: servers.name }).from(servers).where(eq(servers.id, invite.serverId)).limit(1)
+      : [];
     return apiJson({
       valid: validInvite(invite),
-      server: invite?.serverId === DEFAULT_SERVER_ID ? "Kuzens" : null,
+      server: server?.name ?? null,
       expiresAt: invite?.expiresAt ?? null,
     });
   } catch (error) {
@@ -95,10 +98,7 @@ export async function POST(request: Request) {
           ),
         )
         .limit(1);
-      if (
-        existingMembership ||
-        (invite!.serverId === DEFAULT_SERVER_ID && profile.isOwner)
-      ) {
+      if (existingMembership) {
         return apiJson({ joined: true, existing: true });
       }
       const [autoMod] = await db

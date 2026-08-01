@@ -1,10 +1,8 @@
 import { and, eq, gt, sql } from "drizzle-orm";
-import { invites, memberRoles, profiles, serverAutoModerationSettings, serverMembers, servers } from "@/db/schema";
+import { invites, memberRoles, profiles, serverAutoModerationSettings, serverMembers } from "@/db/schema";
 import { publicProfile } from "@/lib/profile-view";
 import { getUploads } from "@/lib/storage";
 import {
-  DEFAULT_SERVER_ID,
-  ensureCommunity,
   ensureMembership,
   findProfile,
   isPrimaryOwnerEmail,
@@ -76,25 +74,6 @@ export async function GET(request: Request) {
         .where(eq(profiles.id, profile.id));
       profile = { ...profile, isOwner: true };
     }
-    if (profile?.isOwner) {
-      const { getDb } = await import("@/db");
-      const db = getDb();
-      await db
-        .update(servers)
-        .set({ ownerProfileId: profile.id })
-        .where(eq(servers.id, DEFAULT_SERVER_ID));
-      await ensureMembership(profile.id, DEFAULT_SERVER_ID);
-      await db
-        .insert(memberRoles)
-        .values({
-          id: `${DEFAULT_SERVER_ID}:@${profile.username}:owner`,
-          serverId: DEFAULT_SERVER_ID,
-          memberTag: `@${profile.username}`,
-          roleId: `${DEFAULT_SERVER_ID}:owner`,
-          createdAt: new Date().toISOString(),
-        })
-        .onConflictDoNothing();
-    }
     return apiJson({
       profile: profile ? publicProfile(profile) : null,
       identity: {
@@ -130,19 +109,20 @@ export async function POST(request: Request) {
         { status: 400 },
       );
     }
-    const db = await ensureCommunity();
+    const { getDb } = await import("@/db");
+    const db = getDb();
     const existing = await findProfile(identity);
     if (existing) return apiJson({ profile: publicProfile(existing) });
 
     const isOwner = isPrimaryOwnerEmail(identity.email);
     let invite: typeof invites.$inferSelect | undefined;
-    if (!isOwner) {
-      const inviteCode =
-        typeof payload.inviteCode === "string"
-          ? payload.inviteCode.trim().toLocaleUpperCase("en-US")
-          : "";
+    const inviteCode =
+      typeof payload.inviteCode === "string"
+        ? payload.inviteCode.trim().toLocaleUpperCase("en-US")
+        : "";
+    if (inviteCode) {
       if (!/^[A-Z2-9]{10}$/.test(inviteCode)) {
-        return apiJson({ error: "Geçerli bir Kuzens daveti gerekiyor." }, { status: 403 });
+        return apiJson({ error: "Davet kodunun biçimi geçersiz." }, { status: 400 });
       }
       [invite] = await db.select().from(invites).where(eq(invites.code, inviteCode)).limit(1);
       if (
@@ -184,25 +164,18 @@ export async function POST(request: Request) {
       createdAt: now,
     };
     await db.insert(profiles).values(profile);
-    const targetServerId = invite?.serverId || DEFAULT_SERVER_ID;
-    if (isOwner) {
-      await db
-        .update(servers)
-        .set({ ownerProfileId: profile.id })
-        .where(eq(servers.id, DEFAULT_SERVER_ID));
-    }
-    await ensureMembership(profile.id, targetServerId);
-    await db
-      .insert(memberRoles)
-      .values({
-        id: `${targetServerId}:@${username}:${isOwner ? "owner" : "member"}`,
-        serverId: targetServerId,
-        memberTag: `@${username}`,
-        roleId: `${targetServerId}:${isOwner ? "owner" : "member"}`,
-        createdAt: now,
-      })
-      .onConflictDoNothing();
     if (invite) {
+      await ensureMembership(profile.id, invite.serverId);
+      await db
+        .insert(memberRoles)
+        .values({
+          id: `${invite.serverId}:@${username}`,
+          serverId: invite.serverId,
+          memberTag: `@${username}`,
+          roleId: `${invite.serverId}:member`,
+          createdAt: now,
+        })
+        .onConflictDoNothing();
       await db
         .update(invites)
         .set({ uses: sql`${invites.uses} + 1` })

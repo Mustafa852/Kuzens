@@ -3,7 +3,6 @@ import { channels, serverMembers } from "@/db/schema";
 import {
   DEFAULT_SERVER_ID,
   PERMISSIONS,
-  ensureMembership,
   requireChannelPermission,
   requireMember,
 } from "@/lib/community";
@@ -89,7 +88,6 @@ export async function POST(request: Request) {
       );
     }
 
-    await ensureMembership(profile.id, serverId);
     const now = new Date().toISOString();
     await db
       .update(serverMembers)

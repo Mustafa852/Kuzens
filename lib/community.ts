@@ -4,7 +4,6 @@ import {
   auditLogs,
   channelMemberPermissionOverwrites,
   channelPermissionOverwrites,
-  channels,
   memberRoles,
   profiles,
   roles,
@@ -36,14 +35,6 @@ export const PERMISSIONS = {
 } as const;
 export const ALL_PERMISSIONS = 2047;
 
-const defaultChannels = [
-  { id: "genel", serverId: DEFAULT_SERVER_ID, name: "genel", kind: "text" as const, position: 0 },
-  { id: "oyun-gecesi", serverId: DEFAULT_SERVER_ID, name: "oyun-gecesi", kind: "text" as const, position: 1 },
-  { id: "paylasimlar", serverId: DEFAULT_SERVER_ID, name: "paylaşımlar", kind: "text" as const, position: 2 },
-  { id: "muhabbet", serverId: DEFAULT_SERVER_ID, name: "Muhabbet", kind: "voice" as const, position: 3 },
-  { id: "gece-ekibi", serverId: DEFAULT_SERVER_ID, name: "Gece Ekibi", kind: "voice" as const, position: 4 },
-];
-
 export function defaultRoles(serverId = DEFAULT_SERVER_ID) {
   const now = new Date().toISOString();
   return [
@@ -51,21 +42,6 @@ export function defaultRoles(serverId = DEFAULT_SERVER_ID) {
     { id: `${serverId}:moderator`, serverId, name: "Moderatör", color: "#9c7cff", permissions: 2046, position: 1, createdAt: now },
     { id: `${serverId}:member`, serverId, name: "Kuzen", color: "#5be39a", permissions: 1984, position: 2, createdAt: now },
   ];
-}
-
-export async function ensureCommunity() {
-  const db = getDb();
-  const now = new Date().toISOString();
-  await db
-    .insert(servers)
-    .values({ id: DEFAULT_SERVER_ID, name: "Kuzens", icon: "K", createdAt: now })
-    .onConflictDoNothing();
-  await db
-    .insert(channels)
-    .values(defaultChannels.map((channel) => ({ ...channel, createdAt: now })))
-    .onConflictDoNothing();
-  await db.insert(roles).values(defaultRoles()).onConflictDoNothing();
-  return db;
 }
 
 export async function findProfile(identity: RequestIdentity) {
@@ -89,9 +65,7 @@ export async function requireMember(identity: RequestIdentity, serverId = DEFAUL
   const profile = await requireProfile(identity);
   const [server] = await db.select().from(servers).where(eq(servers.id, serverId)).limit(1);
   if (!server) throw new ApiError(404, "Topluluk bulunamadı.");
-  const isServerOwner =
-    server.ownerProfileId === profile.id ||
-    (serverId === DEFAULT_SERVER_ID && profile.isOwner);
+  const isServerOwner = server.ownerProfileId === profile.id;
   if (isServerOwner) return { db, profile };
 
   const [membership] = await db
@@ -134,10 +108,7 @@ export async function permissionsFor(
 ) {
   const db = getDb();
   const [server] = await db.select().from(servers).where(eq(servers.id, serverId)).limit(1);
-  if (
-    server?.ownerProfileId === profile.id ||
-    (serverId === DEFAULT_SERVER_ID && profile.isOwner)
-  ) {
+  if (server?.ownerProfileId === profile.id) {
     return ALL_PERMISSIONS;
   }
   const memberTag = `@${profile.username}`;

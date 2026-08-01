@@ -38,6 +38,7 @@ const [
   linkPreviewRoute,
   avatarRoute,
   storageSource,
+  resetMembershipMigration,
 ] =
   await Promise.all([
     readFile(new URL("../app/KuzensApp.tsx", import.meta.url), "utf8"),
@@ -75,6 +76,7 @@ const [
     readFile(new URL("../app/api/link-preview/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/avatar/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../lib/storage.ts", import.meta.url), "utf8"),
+    readFile(new URL("../drizzle/0022_reset_native_default_memberships.sql", import.meta.url), "utf8"),
   ]);
 
 const apiRoot = new URL("../app/api/", import.meta.url);
@@ -192,11 +194,26 @@ test("keeps user content inert and realtime signals targeted", () => {
 
 test("enforces scoped ownership, role hierarchy, and bans", () => {
   assert.match(communitySource, /server\.ownerProfileId === profile\.id/);
-  assert.match(communitySource, /serverId === DEFAULT_SERVER_ID && profile\.isOwner/);
+  assert.doesNotMatch(communitySource, /serverId === DEFAULT_SERVER_ID && profile\.isOwner/);
   assert.match(membersRoute, /rolePosition\(target\) <= rolePosition\(profile\)/);
   assert.match(membersRoute, /serverBans/);
   assert.match(invitesRoute, /Bu topluluğa erişimin yasaklanmış/);
   assert.match(rolesRoute, /Kurucu rolü başka bir üyeye atanamaz/);
+});
+
+test("starts native accounts empty and scopes every community to explicit membership", () => {
+  assert.match(appSource, /const \[activeServerId, setActiveServerId\] = useState\(""\)/);
+  assert.match(appSource, /const \[channels, setChannels\] = useState<Channel\[]>\(\[]\)/);
+  assert.match(appSource, /className="zero-state-home"/);
+  assert.match(appSource, /Başka kullanıcıların toplulukları, odaları ve mesajları burada görünmez/);
+  assert.doesNotMatch(serversRoute, /serverIds\.add\(DEFAULT_SERVER_ID\)/);
+  assert.doesNotMatch(profileRoute, /invite\?\.serverId \|\| DEFAULT_SERVER_ID/);
+  assert.doesNotMatch(membersRoute, /serverId === DEFAULT_SERVER_ID && profile\.isOwner/);
+  assert.doesNotMatch(messagesRoute, /serverId === DEFAULT_SERVER_ID && item\.isOwner/);
+  assert.match(notificationsRoute, /allowedServerIds/);
+  assert.match(notificationsRoute, /serverMembers\.profileId/);
+  assert.match(resetMembershipMigration, /DELETE FROM `server_members`/);
+  assert.match(resetMembershipMigration, /INNER JOIN `auth_accounts`/);
 });
 
 test("provides app-like context actions, mentions, reactions, and profile settings", () => {

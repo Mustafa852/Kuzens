@@ -5,6 +5,7 @@ import {
   friendships,
   messageMentions,
   messages,
+  serverMembers,
   servers,
 } from "@/db/schema";
 import { requireProfile } from "@/lib/community";
@@ -83,9 +84,23 @@ export async function GET(request: Request) {
         .map((setting) => setting.channelId),
     );
     const serverIds = Array.from(new Set(channelRows.map((item) => item.serverId)));
-    const serverRows = serverIds.length
-      ? await db.select().from(servers).where(inArray(servers.id, serverIds))
-      : [];
+    const [serverRows, membershipRows, ownedServerRows] = await Promise.all([
+      serverIds.length
+        ? db.select().from(servers).where(inArray(servers.id, serverIds))
+        : Promise.resolve([]),
+      db
+        .select({ serverId: serverMembers.serverId })
+        .from(serverMembers)
+        .where(eq(serverMembers.profileId, profile.id)),
+      db
+        .select({ id: servers.id })
+        .from(servers)
+        .where(eq(servers.ownerProfileId, profile.id)),
+    ]);
+    const allowedServerIds = new Set([
+      ...membershipRows.map((item) => item.serverId),
+      ...ownedServerRows.map((item) => item.id),
+    ]);
     const messageById = new Map(messageRows.map((item) => [item.id, item]));
     const channelById = new Map(channelRows.map((item) => [item.id, item]));
     const serverById = new Map(serverRows.map((item) => [item.id, item]));
@@ -98,6 +113,7 @@ export async function GET(request: Request) {
           !message ||
           !channel ||
           !server ||
+          !allowedServerIds.has(server.id) ||
           message.deletedAt ||
           (message.authorProfileId && blockedProfileIds.has(message.authorProfileId)) ||
           mutedChannelIds.has(channel.id)

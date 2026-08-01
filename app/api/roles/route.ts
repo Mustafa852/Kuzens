@@ -84,9 +84,7 @@ export async function POST(request: Request) {
     const { db, profile } = await requireMember(identity, serverId);
     await requirePermission(profile, PERMISSIONS.manageRoles, serverId);
     const [server] = await db.select().from(servers).where(eq(servers.id, serverId)).limit(1);
-    const isServerOwner =
-      server?.ownerProfileId === profile.id ||
-      (serverId === DEFAULT_SERVER_ID && profile.isOwner);
+    const isServerOwner = server?.ownerProfileId === profile.id;
     const actorPermissions = await permissionsFor(profile, serverId);
     await enforceRateLimit(request, "roles-update", identity.email, 20, 60 * 60_000);
     const action = payload.action || "save";

@@ -7970,6 +7970,211 @@
     rgba(15, 17, 25, 0.97);
 }
 
+.zero-state-home {
+  grid-column: 2 / -1;
+  display: grid;
+  grid-template-rows: 72px minmax(0, 1fr);
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid rgba(210, 218, 255, 0.09);
+  border-radius: 20px;
+  color: #f5f3ff;
+  background:
+    radial-gradient(circle at 22% 14%, rgba(139, 115, 255, 0.2), transparent 28%),
+    radial-gradient(circle at 82% 88%, rgba(69, 222, 199, 0.12), transparent 26%),
+    linear-gradient(145deg, #11131d, #0a0c12 68%);
+  box-shadow: 0 18px 55px rgba(0, 0, 0, 0.2);
+}
+
+.zero-state-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 0 24px;
+  border-bottom: 1px solid rgba(210, 218, 255, 0.075);
+  background: rgba(10, 12, 18, 0.42);
+  backdrop-filter: blur(18px);
+}
+
+.zero-state-topbar > div:first-child {
+  display: grid;
+  gap: 4px;
+}
+
+.zero-state-topbar > div:first-child strong {
+  font-size: 14px;
+}
+
+.zero-state-topbar > div:last-child {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.zero-state-topbar button {
+  min-height: 35px;
+  padding: 0 13px;
+  border: 1px solid rgba(255, 255, 255, 0.075);
+  border-radius: 10px;
+  color: #c5c9d8;
+  background: rgba(255, 255, 255, 0.035);
+  font-size: 10px;
+  font-weight: 750;
+}
+
+.zero-state-topbar button:hover {
+  border-color: rgba(151, 126, 255, 0.32);
+  color: #fff;
+  background: rgba(151, 126, 255, 0.1);
+}
+
+.zero-state-topbar .zero-profile {
+  display: grid;
+  min-width: 38px;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  background: transparent;
+}
+
+.zero-state-content {
+  display: grid;
+  width: min(850px, calc(100% - 48px));
+  place-self: center;
+  justify-items: center;
+  gap: 10px;
+  padding: 28px 0 42px;
+  text-align: center;
+}
+
+.zero-state-mark {
+  display: flex;
+  width: 68px;
+  height: 68px;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 21px;
+  background: linear-gradient(145deg, #a087ff, #5a40d0);
+  box-shadow: 0 20px 65px rgba(109, 76, 255, 0.32);
+}
+
+.zero-state-mark b,
+.zero-state-mark i {
+  color: #fff;
+  font-size: 22px;
+  font-style: normal;
+  font-weight: 950;
+  letter-spacing: -0.1em;
+}
+
+.zero-state-mark i { color: #8ff8e9; }
+.zero-state-content > .eyebrow { color: #70e7d5; }
+
+.zero-state-content h1 {
+  margin: 0;
+  font-size: clamp(30px, 4vw, 52px);
+  line-height: 1;
+  letter-spacing: -0.045em;
+}
+
+.zero-state-content > p {
+  max-width: 660px;
+  margin: 3px 0 14px;
+  color: #9ba1b5;
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.zero-state-actions {
+  display: grid;
+  width: 100%;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.zero-state-actions button {
+  display: grid;
+  min-height: 122px;
+  align-content: center;
+  justify-items: start;
+  gap: 7px;
+  padding: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 16px;
+  color: #eef0f8;
+  background: rgba(255, 255, 255, 0.028);
+  text-align: left;
+}
+
+.zero-state-actions button:hover {
+  border-color: rgba(151, 126, 255, 0.3);
+  background: rgba(151, 126, 255, 0.08);
+  transform: translateY(-2px);
+}
+
+.zero-state-actions button span { color: #a992ff; font-size: 21px; }
+.zero-state-actions button b { font-size: 13px; }
+.zero-state-actions button small { color: #81889d; font-size: 9px; line-height: 1.45; }
+.zero-state-actions .zero-primary {
+  border-color: rgba(140, 112, 255, 0.35);
+  background: linear-gradient(145deg, rgba(139, 115, 255, 0.25), rgba(82, 61, 180, 0.11));
+}
+
+.zero-invite-form {
+  display: grid;
+  width: min(520px, 100%);
+  gap: 7px;
+  margin-top: 14px;
+  text-align: left;
+}
+
+.zero-invite-form > label { color: #d6d8e5; font-size: 10px; font-weight: 800; }
+.zero-invite-form > div { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+.zero-invite-form input {
+  min-width: 0;
+  height: 42px;
+  padding: 0 14px;
+  border: 1px solid rgba(151, 126, 255, 0.2);
+  border-radius: 11px;
+  color: #f8f7ff;
+  background: rgba(7, 8, 13, 0.7);
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  outline: 0;
+}
+.zero-invite-form input:focus { border-color: #8f78ff; box-shadow: 0 0 0 3px rgba(143, 120, 255, 0.12); }
+.zero-invite-form button {
+  padding: 0 17px;
+  border-radius: 11px;
+  color: #fff;
+  background: linear-gradient(135deg, #9277ff, #6e4ee3);
+  font-size: 10px;
+  font-weight: 850;
+}
+.zero-invite-form button:disabled { opacity: 0.4; cursor: not-allowed; }
+.zero-invite-form > small { color: #70778b; font-size: 8px; }
+
+.zero-privacy-note {
+  display: flex;
+  width: min(520px, 100%);
+  align-items: center;
+  gap: 10px;
+  margin-top: 9px;
+  padding: 11px 13px;
+  border: 1px solid rgba(69, 222, 199, 0.16);
+  border-radius: 12px;
+  background: rgba(69, 222, 199, 0.045);
+  text-align: left;
+}
+.zero-privacy-note > span { display: grid; width: 24px; height: 24px; flex: 0 0 auto; place-items: center; border-radius: 8px; color: #071511; background: #65e8d5; font-weight: 950; }
+.zero-privacy-note > div { display: grid; gap: 2px; }
+.zero-privacy-note strong { color: #c9fff7; font-size: 9px; }
+.zero-privacy-note small { color: #778f90; font-size: 8px; line-height: 1.45; }
+
 .app-shell-v3 .server-header,
 .app-shell-v3 .chat-header,
 .app-shell-v3 .member-summary {
@@ -8372,6 +8577,9 @@
   .splash-copy { top: 9%; width: min(480px, 76vw); }
   .direct-head-tools input { min-width: 0; width: 110px; }
   .direct-head-tools button { font-size: 10px; padding: 7px; }
+  .zero-state-home { grid-column: 2; }
+  .zero-state-actions { grid-template-columns: 1fr; }
+  .zero-state-actions button { min-height: 88px; }
 }
 
 @media (max-width: 540px) {
@@ -8387,6 +8595,14 @@
   .splash-copy { top: 7%; left: 24px; width: calc(100vw - 48px); }
   .splash-copy h1 { max-width: 290px; }
   .kuzens-splash > img { object-position: 67% center; }
+  .zero-state-home { grid-template-rows: auto minmax(0, 1fr); }
+  .zero-state-topbar { align-items: flex-start; padding: 14px; }
+  .zero-state-topbar > div:last-child > button:not(.zero-profile) { display: none; }
+  .zero-state-content { width: calc(100% - 28px); align-content: start; overflow-y: auto; padding: 34px 0; }
+  .zero-state-content h1 { font-size: 32px; }
+  .zero-state-content > p { font-size: 11px; }
+  .zero-invite-form > div { grid-template-columns: 1fr; }
+  .zero-invite-form button { min-height: 40px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

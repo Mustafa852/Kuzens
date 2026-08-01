@@ -510,14 +510,6 @@ const channelPermissionOptions = [
   { bit: 128, label: "Ekran paylaş", kinds: ["voice"] as const },
 ];
 
-const fallbackChannels: Channel[] = [
-  { id: "genel", serverId: "kuzens", name: "genel", kind: "text", position: 0 },
-  { id: "oyun-gecesi", serverId: "kuzens", name: "oyun-gecesi", kind: "text", position: 1 },
-  { id: "paylasimlar", serverId: "kuzens", name: "paylaşımlar", kind: "text", position: 2 },
-  { id: "muhabbet", serverId: "kuzens", name: "Muhabbet", kind: "voice", position: 3 },
-  { id: "gece-ekibi", serverId: "kuzens", name: "Gece Ekibi", kind: "voice", position: 4 },
-];
-
 const memberTones = ["purple", "pink", "blue", "orange", "green"];
 
 function toneFor(value: string) {
@@ -969,13 +961,14 @@ function RemoteVideo({ stream, label }: { stream: MediaStream; label: string }) 
 
 export function KuzensApp() {
   const [servers, setServers] = useState<CommunityServer[]>([]);
-  const [activeServerId, setActiveServerId] = useState("kuzens");
+  const [activeServerId, setActiveServerId] = useState("");
+  const [serversLoaded, setServersLoaded] = useState(false);
   const [serverRefresh, setServerRefresh] = useState(0);
-  const [channels, setChannels] = useState<Channel[]>(fallbackChannels);
+  const [channels, setChannels] = useState<Channel[]>([]);
   const [categories, setCategories] = useState<ChannelCategory[]>([]);
   const [customEmojis, setCustomEmojis] = useState<CustomEmoji[]>([]);
   const [collapsedCategories, setCollapsedCategories] = useState<Set<string>>(() => new Set());
-  const [activeChannel, setActiveChannel] = useState("genel");
+  const [activeChannel, setActiveChannel] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [members, setMembers] = useState<Member[]>([]);
   const [bannedMembers, setBannedMembers] = useState<BannedMember[]>([]);
@@ -996,6 +989,7 @@ export function KuzensApp() {
   >(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [newServerName, setNewServerName] = useState("");
+  const [joinInviteCode, setJoinInviteCode] = useState("");
   const [serverSettingsName, setServerSettingsName] = useState("");
   const [serverSettingsIcon, setServerSettingsIcon] = useState("");
   const [serverSettingsDescription, setServerSettingsDescription] = useState("");
@@ -1224,7 +1218,7 @@ export function KuzensApp() {
   const threadDraftKey = `thread:${activeThread?.id || "none"}`;
   const activeServer =
     servers.find((server) => server.id === activeServerId) ||
-    ({ id: "kuzens", name: "Kuzens", icon: "KZ" } satisfies CommunityServer);
+    ({ id: "", name: "", icon: "KZ" } satisfies CommunityServer);
   const selectedRole = roleItems.find((role) => role.id === selectedRoleId);
   const textChannels = channels.filter((channel) => channel.kind !== "voice");
   const voiceChannels = channels.filter((channel) => channel.kind === "voice");
@@ -1274,10 +1268,7 @@ export function KuzensApp() {
   const canShareInConnectedVoice =
     !connectedVoiceChannel ||
     (((connectedVoiceChannel.permissions ?? permissions) & 128) !== 0);
-  const ownsActiveServer =
-    activeServerId === "kuzens"
-      ? Boolean(profile?.isOwner)
-      : activeServer.ownerProfileId === profile?.id;
+  const ownsActiveServer = activeServer.ownerProfileId === profile?.id;
   const mentionQuery = useMemo(() => {
     const match = draft.match(/(?:^|\s)@([a-z0-9_ğüşöçı-]*)$/i);
     return match ? match[1].toLocaleLowerCase("en-US") : null;
@@ -1388,34 +1379,53 @@ export function KuzensApp() {
 
   useEffect(() => {
     if (!profile) return;
+    let cancelled = false;
     apiFetch("/api/servers")
       .then(async (response) => (await response.json()) as { servers?: CommunityServer[] })
       .then((data) => {
+        if (cancelled) return;
         const nextServers = data.servers || [];
         setServers(nextServers);
-        if (nextServers.length && !nextServers.some((server) => server.id === activeServerId)) {
-          setActiveServerId(nextServers[0].id);
+        setActiveServerId((current) =>
+          nextServers.some((server) => server.id === current)
+            ? current
+            : nextServers[0]?.id || "",
+        );
+        if (!nextServers.length) {
+          setChannels([]);
+          setCategories([]);
+          setCustomEmojis([]);
+          setActiveChannel("");
+          setMessages([]);
+          setMembers([]);
+          setBannedMembers([]);
+          setPermissions(0);
         }
       })
-      .catch(() => undefined);
-  }, [activeServerId, profile, serverRefresh]);
+      .catch(() => undefined)
+      .finally(() => {
+        if (!cancelled) setServersLoaded(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [profile, serverRefresh]);
 
   useEffect(() => {
-    if (!profile) return;
+    if (!profile || !activeServerId) return;
     Promise.all([
       apiFetch(`/api/channels?server=${encodeURIComponent(activeServerId)}`).then(async (response) => (await response.json()) as { channels?: Channel[] }),
       apiFetch(`/api/categories?server=${encodeURIComponent(activeServerId)}`).then(async (response) => (await response.json()) as { categories?: ChannelCategory[] }),
       apiFetch(`/api/emojis?server=${encodeURIComponent(activeServerId)}`).then(async (response) => (await response.json()) as { emojis?: CustomEmoji[] }),
     ])
       .then(([data, categoryData, emojiData]) => {
-        if (data.channels?.length) {
-          setChannels(data.channels);
-          setActiveChannel((current) =>
-            data.channels!.some((channel) => channel.id === current)
-              ? current
-              : data.channels![0].id,
-          );
-        }
+        const nextChannels = data.channels || [];
+        setChannels(nextChannels);
+        setActiveChannel((current) =>
+          nextChannels.some((channel) => channel.id === current)
+            ? current
+            : nextChannels[0]?.id || "",
+        );
         const nextCategories = categoryData.categories || [];
         setCategories(nextCategories);
         setCollapsedCategories(
@@ -1427,7 +1437,7 @@ export function KuzensApp() {
   }, [activeServerId, profile]);
 
   useEffect(() => {
-    if (!profile) return;
+    if (!profile || !activeServerId || !activeChannel) return;
     let cancelled = false;
     async function syncMessages(initial = false) {
       if (initial) setLoadingMessages(true);
@@ -1471,7 +1481,7 @@ export function KuzensApp() {
   }, [activeChannel, activeServerId, selected?.kind, profile]);
 
   useEffect(() => {
-    if (!profile) return;
+    if (!profile || !activeServerId) return;
     let cancelled = false;
     async function loadMembers() {
       const response = await apiFetch(
@@ -1511,7 +1521,7 @@ export function KuzensApp() {
   }, [activeServerId, connectedVoiceChannelId, profile, sharing, voiceConnected]);
 
   useEffect(() => {
-    if (!profile) return;
+    if (!profile || !activeServerId) return;
     let stopped = false;
     async function syncChannelStates() {
       const response = await apiFetch(
@@ -5008,6 +5018,28 @@ export function KuzensApp() {
     setToast({ text: `${data.server.name} topluluğu hazır.`, tone: "success" });
   }
 
+  async function joinServerWithCode(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const code = joinInviteCode.trim().toLocaleUpperCase("en-US");
+    if (!/^[A-Z2-9]{10}$/.test(code)) {
+      setToast({ text: "10 karakterli geçerli davet kodunu yazmalısın.", tone: "danger" });
+      return;
+    }
+    const response = await apiFetch("/api/invites", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "join", code }),
+    });
+    if (!response.ok) {
+      setToast({ text: await responseError(response, "Davetle katılım tamamlanamadı."), tone: "danger" });
+      return;
+    }
+    setJoinInviteCode("");
+    setServersLoaded(false);
+    setServerRefresh((value) => value + 1);
+    setToast({ text: "Topluluğa katıldın.", tone: "success" });
+  }
+
   function openServerSettings() {
     if (!canManageServer) {
       setToast({ text: "Topluluk ayarlarını düzenleme yetkin yok.", tone: "danger" });
@@ -5063,7 +5095,6 @@ export function KuzensApp() {
 
   async function deleteActiveServer() {
     if (
-      activeServerId === "kuzens" ||
       !ownsActiveServer ||
       !window.confirm(`${activeServer.name} topluluğu ve tüm mesajları kalıcı olarak silinsin mi?`)
     ) {
@@ -5081,7 +5112,17 @@ export function KuzensApp() {
     }
     const nextServers = servers.filter((server) => server.id !== activeServerId);
     setServers(nextServers);
-    setActiveServerId(nextServers[0]?.id || "kuzens");
+    setActiveServerId(nextServers[0]?.id || "");
+    if (!nextServers.length) {
+      setChannels([]);
+      setCategories([]);
+      setCustomEmojis([]);
+      setActiveChannel("");
+      setMessages([]);
+      setMembers([]);
+      setBannedMembers([]);
+      setPermissions(0);
+    }
     setToast({ text: "Topluluk silindi.", tone: "success" });
   }
 
@@ -5272,6 +5313,8 @@ export function KuzensApp() {
         </a>
       </aside>
 
+      {activeServerId ? (
+        <>
       <aside className={`channel-sidebar ${mobileChannels ? "mobile-open" : ""}`}>
         <header
           className="server-header"
@@ -5310,7 +5353,7 @@ export function KuzensApp() {
           <button onClick={openRoles}><span>♢</span><b>Roller</b></button>
           {canManageServer && <button onClick={openServerSettings}><span>⚙</span><b>Ayarlar</b></button>}
           <button className="aura-entry" onClick={openAura}><span>✦</span><b>Aura</b></button>
-          {ownsActiveServer && activeServerId !== "kuzens" && (
+          {ownsActiveServer && (
             <button className="danger-utility" onClick={() => void deleteActiveServer()}><span>×</span><b>Sil</b></button>
           )}
         </div>
@@ -6191,6 +6234,78 @@ export function KuzensApp() {
         </article>
       </aside>
 
+        </>
+      ) : (
+        <section className="zero-state-home" aria-live="polite">
+          <header className="zero-state-topbar">
+            <div>
+              <span className="eyebrow">KUZENS ANA SAYFA</span>
+              <strong>{serversLoaded ? "Kendi alanını oluşturmaya hazırsın" : "Alanların yükleniyor…"}</strong>
+            </div>
+            <div>
+              <button onClick={openFriends}>Arkadaşlar</button>
+              <button onClick={openDirectMessages}>Özel mesajlar</button>
+              <button className="zero-profile" onClick={openProfileSettings} aria-label="Profili düzenle">
+                <Avatar
+                  name={profile?.displayName || "Kuzens"}
+                  tone="purple"
+                  imageUrl={profile?.avatarUrl}
+                  status={profile?.presenceStatus || "online"}
+                />
+              </button>
+            </div>
+          </header>
+          <div className="zero-state-content">
+            <span className="zero-state-mark"><b>K</b><i>Z</i></span>
+            <span className="eyebrow">SIFIRDAN BAŞLA</span>
+            <h1>Burası tamamen sana ait.</h1>
+            <p>
+              Başka kullanıcıların toplulukları, odaları ve mesajları burada görünmez.
+              Bir topluluk kurabilir veya sana gönderilen özel davetle katılabilirsin.
+            </p>
+            <div className="zero-state-actions">
+              <button className="zero-primary" onClick={() => setModal("server")}>
+                <span>＋</span><b>Topluluk kur</b><small>İlk odalarını ve rollerini oluştur</small>
+              </button>
+              <button onClick={openFriends}>
+                <span>☺</span><b>Arkadaş ekle</b><small>Kullanıcı adıyla istek gönder</small>
+              </button>
+              <button onClick={openDirectMessages}>
+                <span>✦</span><b>Mesajlara git</b><small>Birebir veya grup konuşması başlat</small>
+              </button>
+            </div>
+            <form className="zero-invite-form" onSubmit={joinServerWithCode}>
+              <label htmlFor="zero-invite-code">Bir davet kodun mu var?</label>
+              <div>
+                <input
+                  id="zero-invite-code"
+                  value={joinInviteCode}
+                  onChange={(event) =>
+                    setJoinInviteCode(
+                      event.target.value
+                        .toLocaleUpperCase("en-US")
+                        .replace(/[^A-Z2-9]/g, "")
+                        .slice(0, 10),
+                    )
+                  }
+                  placeholder="ABCD234EFG"
+                  aria-label="Topluluk davet kodu"
+                />
+                <button disabled={joinInviteCode.length !== 10}>Davetle katıl</button>
+              </div>
+              <small>Davet bağlantısına tıklarsan kod otomatik işlenir.</small>
+            </form>
+            <div className="zero-privacy-note">
+              <span>✓</span>
+              <div>
+                <strong>Üyelik tabanlı veri koruması</strong>
+                <small>Bir topluluğun içeriği yalnızca kurucusuna ve davetle katılan üyelerine açılır.</small>
+              </div>
+            </div>
+          </div>
+        </section>
+      )}
+
       <div className="remote-audio" aria-hidden="true">
         {Object.entries(remoteStreams).map(([memberId, stream]) => (
           <RemoteAudio
@@ -6790,7 +6905,7 @@ export function KuzensApp() {
               <button type="button" onClick={() => void openAuditLog()}><span>◎</span><div><strong>Denetim kaydı</strong><small>Rol, oda, üye ve topluluk işlemlerini izle</small></div><b>›</b></button>
             </div>
             <div className="modal-actions">
-              {activeServerId !== "kuzens" && (
+              {ownsActiveServer && (
                 <button
                   type="button"
                   className="danger-outline"

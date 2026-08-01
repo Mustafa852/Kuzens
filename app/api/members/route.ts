@@ -50,11 +50,7 @@ export async function GET(request: Request) {
     }
     const now = Date.now();
     const members = profileRows
-      .filter(
-        (profile) =>
-          membershipByProfile.has(profile.id) ||
-          (serverId === DEFAULT_SERVER_ID && profile.isOwner),
-      )
+      .filter((profile) => membershipByProfile.has(profile.id))
       .map((profile) => {
         const membership = membershipByProfile.get(profile.id);
         const lastSeen = membership?.lastSeenAt
@@ -169,12 +165,8 @@ export async function POST(request: Request) {
       db.select().from(roles).where(eq(roles.serverId, serverId)),
     ]);
     if (!target) return apiJson({ error: "Üye bulunamadı." }, { status: 404 });
-    const actorIsOwner =
-      server?.ownerProfileId === profile.id ||
-      (serverId === DEFAULT_SERVER_ID && profile.isOwner);
-    const targetIsOwner =
-      server?.ownerProfileId === target.id ||
-      (serverId === DEFAULT_SERVER_ID && target.isOwner);
+    const actorIsOwner = server?.ownerProfileId === profile.id;
+    const targetIsOwner = server?.ownerProfileId === target.id;
     if (targetIsOwner) {
       return apiJson({ error: "Topluluk kurucusuna moderasyon uygulanamaz." }, { status: 403 });
     }
@@ -187,9 +179,7 @@ export async function POST(request: Request) {
       assignmentsByTag.set(assignment.memberTag, grouped);
     }
     const rolePosition = (member: typeof profiles.$inferSelect) => {
-      const memberIsOwner =
-        server?.ownerProfileId === member.id ||
-        (serverId === DEFAULT_SERVER_ID && member.isOwner);
+      const memberIsOwner = server?.ownerProfileId === member.id;
       if (memberIsOwner) return -1;
       const positions = [
         roleById.get(`${serverId}:member`)?.position,

@@ -291,7 +291,7 @@ export async function GET(request: Request) {
       .from(serverMembers)
       .where(and(eq(serverMembers.serverId, serverId), eq(serverMembers.profileId, profile.id)))
       .limit(1);
-    const historyBoundary = channel.historyMode === "since_join" && !profile.isOwner
+    const historyBoundary = channel.historyMode === "since_join"
       ? membership?.joinedAt || new Date().toISOString()
       : null;
 
@@ -484,7 +484,7 @@ export async function POST(request: Request) {
       (item) =>
         item.id !== profile.id &&
         !blockedProfileIds.has(item.id) &&
-        (memberIds.has(item.id) || (serverId === DEFAULT_SERVER_ID && item.isOwner)) &&
+        memberIds.has(item.id) &&
         (
           massMention ||
           mentionedUsernames.has(item.username) ||
@@ -620,7 +620,7 @@ export async function PATCH(request: Request) {
       (item) =>
         item.id !== profile.id &&
         !blockedProfileIds.has(item.id) &&
-        (memberIds.has(item.id) || (serverId === DEFAULT_SERVER_ID && item.isOwner)) &&
+        memberIds.has(item.id) &&
         (massMention || usernames.has(item.username) || item.id === replyProfileId),
     );
     if (targets.length) {

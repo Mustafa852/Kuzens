@@ -1,4 +1,4 @@
-import { and, eq, or } from "drizzle-orm";
+import { eq, or } from "drizzle-orm";
 import {
   authAccounts,
   authChallenges,
@@ -31,11 +31,7 @@ import {
   servers,
   threadMessages,
 } from "@/db/schema";
-import {
-  DEFAULT_SERVER_ID,
-  requireProfile,
-  writeAudit,
-} from "@/lib/community";
+import { requireProfile } from "@/lib/community";
 import { getDb } from "@/db";
 import {
   ApiError,
@@ -87,26 +83,15 @@ export async function DELETE(request: Request) {
       .select({ id: servers.id, name: servers.name })
       .from(servers)
       .where(eq(servers.ownerProfileId, profile.id));
-    const customOwned = ownedServers.filter(
-      (server) => server.id !== DEFAULT_SERVER_ID,
-    );
-    if (customOwned.length) {
+    if (ownedServers.length) {
       throw new ApiError(
         409,
-        `Önce sahibi olduğun toplulukları silmelisin: ${customOwned
+        `Önce sahibi olduğun toplulukları silmelisin: ${ownedServers
           .slice(0, 3)
           .map((server) => server.name)
           .join(", ")}`,
       );
     }
-
-    await writeAudit(
-      profile.id,
-      "account.delete",
-      profile.id,
-      "Kullanıcı talebi",
-      DEFAULT_SERVER_ID,
-    );
 
     const conversationMemberships = await db
       .select({ conversationId: directConversationMembers.conversationId })
@@ -222,15 +207,6 @@ export async function DELETE(request: Request) {
     await db
       .delete(serverMembers)
       .where(eq(serverMembers.profileId, profile.id));
-    await db
-      .update(servers)
-      .set({ ownerProfileId: null })
-      .where(
-        and(
-          eq(servers.id, DEFAULT_SERVER_ID),
-          eq(servers.ownerProfileId, profile.id),
-        ),
-      );
     await db.delete(profiles).where(eq(profiles.id, profile.id));
     for (const attachment of uploadedAttachments) {
       await getUploads().delete(attachment.storageKey).catch(() => undefined);

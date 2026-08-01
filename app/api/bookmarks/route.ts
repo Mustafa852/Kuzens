@@ -81,7 +81,6 @@ export async function GET(request: Request) {
     const allowedServers = new Set([
       ...memberRows.map((item) => item.serverId),
       ...ownedRows.map((item) => item.id),
-      ...(profile.isOwner ? ["kuzens"] : []),
     ]);
     const bookmarks = rows.flatMap((bookmark) => {
       const message = messageRows.find((item) => item.id === bookmark.messageId);
