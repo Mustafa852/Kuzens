@@ -1,0 +1,40 @@
+name: Windows surumunu yayinla
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows-release:
+    name: Windows EXE
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Kaynak kodu al
+        uses: actions/checkout@v4
+
+      - name: Node.js kur
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Bagimliliklari kur
+        run: npm ci
+
+      - name: Masaustu bagimliliklarini kur
+        run: npm ci --prefix desktop
+
+      - name: Web uygulamasini dogrula
+        run: npm test
+
+      - name: EXE dosyalarini uret ve GitHub Release'e yukle
+        run: npm run desktop:release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
