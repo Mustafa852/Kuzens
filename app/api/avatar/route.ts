@@ -12,7 +12,7 @@ import { getUploads } from "@/lib/storage";
 
 export async function GET(request: Request) {
   try {
-    const identity = requireIdentity(request);
+    const identity = await requireIdentity(request);
     await requireProfile(identity);
     const profileId = cleanText(
       new URL(request.url).searchParams.get("profile"),

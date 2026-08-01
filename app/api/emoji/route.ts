@@ -6,7 +6,7 @@ import { ApiError, apiError, cleanText, requireIdentity } from "@/lib/security";
 
 export async function GET(request: Request) {
   try {
-    const identity = requireIdentity(request);
+    const identity = await requireIdentity(request);
     const id = cleanText(new URL(request.url).searchParams.get("id"), { max: 80 });
     const { getDb } = await import("@/db");
     const db = getDb();

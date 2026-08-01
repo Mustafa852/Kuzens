@@ -50,7 +50,7 @@ function decodeFile(value: unknown, declaredType: string) {
 export async function POST(request: Request) {
   try {
     assertTrustedMutation(request);
-    const identity = requireIdentity(request);
+    const identity = await requireIdentity(request);
     const payload = await readJson<{
       serverId?: string;
       channelId?: string;
@@ -114,7 +114,7 @@ export async function POST(request: Request) {
 export async function DELETE(request: Request) {
   try {
     assertTrustedMutation(request);
-    const identity = requireIdentity(request);
+    const identity = await requireIdentity(request);
     const payload = await readJson<{ id?: string; serverId?: string }>(request, 2_048);
     const id = cleanText(payload.id, { max: 80 });
     const serverId = cleanText(payload.serverId || DEFAULT_SERVER_ID, { max: 80 });

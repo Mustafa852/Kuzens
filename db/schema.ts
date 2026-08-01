@@ -866,3 +866,61 @@ export const serverGuideProgress = sqliteTable(
     index("server_guide_progress_profile_idx").on(table.profileId, table.updatedAt),
   ],
 );
+
+export const authAccounts = sqliteTable(
+  "auth_accounts",
+  {
+    firebaseUid: text("firebase_uid").primaryKey(),
+    email: text("email").notNull(),
+    emailVerifiedAt: text("email_verified_at"),
+    loginCodeEnabled: integer("login_code_enabled", { mode: "boolean" })
+      .notNull()
+      .default(false),
+    birthConfirmed: integer("birth_confirmed", { mode: "boolean" })
+      .notNull()
+      .default(false),
+    termsVersion: text("terms_version").notNull(),
+    noticeVersion: text("notice_version").notNull(),
+    communityVersion: text("community_version").notNull(),
+    acceptedAt: text("accepted_at").notNull(),
+    lastLoginAt: text("last_login_at"),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [uniqueIndex("auth_accounts_email_idx").on(table.email)],
+);
+
+export const authChallenges = sqliteTable(
+  "auth_challenges",
+  {
+    id: text("id").primaryKey(),
+    firebaseUid: text("firebase_uid").notNull(),
+    email: text("email").notNull(),
+    purpose: text("purpose", { enum: ["registration", "login"] }).notNull(),
+    codeDigest: text("code_digest").notNull(),
+    expiresAt: integer("expires_at").notNull(),
+    attempts: integer("attempts").notNull().default(0),
+    maxAttempts: integer("max_attempts").notNull().default(5),
+    consumedAt: text("consumed_at"),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [
+    index("auth_challenges_uid_created_idx").on(table.firebaseUid, table.createdAt),
+    index("auth_challenges_expires_idx").on(table.expiresAt),
+  ],
+);
+
+export const authSessions = sqliteTable(
+  "auth_sessions",
+  {
+    id: text("id").primaryKey(),
+    firebaseUid: text("firebase_uid").notNull(),
+    expiresAt: integer("expires_at").notNull(),
+    createdAt: text("created_at").notNull(),
+    lastSeenAt: text("last_seen_at").notNull(),
+  },
+  (table) => [
+    index("auth_sessions_uid_idx").on(table.firebaseUid),
+    index("auth_sessions_expires_idx").on(table.expiresAt),
+  ],
+);

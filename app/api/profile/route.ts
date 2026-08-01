@@ -66,7 +66,7 @@ type RegistrationPayload = {
 
 export async function GET(request: Request) {
   try {
-    const identity = requireIdentity(request);
+    const identity = await requireIdentity(request);
     let profile = await findProfile(identity);
     if (profile && isPrimaryOwnerEmail(identity.email) && !profile.isOwner) {
       const { getDb } = await import("@/db");
@@ -99,6 +99,7 @@ export async function GET(request: Request) {
       profile: profile ? publicProfile(profile) : null,
       identity: {
         displayName: identity.displayName,
+        loginCodeEnabled: identity.loginCodeEnabled,
         suggestedUsername: identity.email
           .split("@")[0]
           .replace(/[^a-z0-9_]/g, "")
@@ -114,7 +115,7 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   try {
     assertTrustedMutation(request);
-    const identity = requireIdentity(request);
+    const identity = await requireIdentity(request);
     await enforceRateLimit(request, "profile-create", identity.email, 5, 15 * 60_000);
     const payload = await readJson<RegistrationPayload>(request, 8_192);
     const displayName = cleanText(payload.displayName, { min: 2, max: 32 });
@@ -129,15 +130,6 @@ export async function POST(request: Request) {
         { status: 400 },
       );
     }
-    if (
-      payload.birthConfirmed !== true ||
-      payload.termsAccepted !== true ||
-      payload.noticeRead !== true ||
-      payload.communityAccepted !== true
-    ) {
-      return apiJson({ error: "Zorunlu kayıt onayları tamamlanmalı." }, { status: 400 });
-    }
-
     const db = await ensureCommunity();
     const existing = await findProfile(identity);
     if (existing) return apiJson({ profile: publicProfile(existing) });
@@ -230,7 +222,7 @@ export async function POST(request: Request) {
 export async function PATCH(request: Request) {
   try {
     assertTrustedMutation(request);
-    const identity = requireIdentity(request);
+    const identity = await requireIdentity(request);
     await enforceRateLimit(request, "profile-update", identity.email, 10, 60 * 60_000);
     const payload = await readJson<{
       displayName?: string;

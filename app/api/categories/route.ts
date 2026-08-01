@@ -33,7 +33,7 @@ function normalizedName(value: unknown) {
 
 export async function GET(request: Request) {
   try {
-    const identity = requireIdentity(request);
+    const identity = await requireIdentity(request);
     const serverId = cleanText(
       new URL(request.url).searchParams.get("server") || DEFAULT_SERVER_ID,
       { max: 80 },
@@ -53,7 +53,7 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   try {
     assertTrustedMutation(request);
-    const identity = requireIdentity(request);
+    const identity = await requireIdentity(request);
     const payload = await readJson<CategoryPayload>(request, 4_096);
     const serverId = cleanText(payload.serverId || DEFAULT_SERVER_ID, { max: 80 });
     const { db, profile } = await requireMember(identity, serverId);
@@ -86,7 +86,7 @@ export async function POST(request: Request) {
 export async function PATCH(request: Request) {
   try {
     assertTrustedMutation(request);
-    const identity = requireIdentity(request);
+    const identity = await requireIdentity(request);
     const payload = await readJson<CategoryPayload>(request, 8_192);
     const serverId = cleanText(payload.serverId || DEFAULT_SERVER_ID, { max: 80 });
     const { db, profile } = await requireMember(identity, serverId);
@@ -139,7 +139,7 @@ export async function PATCH(request: Request) {
 export async function DELETE(request: Request) {
   try {
     assertTrustedMutation(request);
-    const identity = requireIdentity(request);
+    const identity = await requireIdentity(request);
     const payload = await readJson<CategoryPayload>(request, 2_048);
     const serverId = cleanText(payload.serverId || DEFAULT_SERVER_ID, { max: 80 });
     const id = cleanText(payload.id, { max: 100 });
@@ -164,7 +164,7 @@ export async function DELETE(request: Request) {
 export async function PUT(request: Request) {
   try {
     assertTrustedMutation(request);
-    const identity = requireIdentity(request);
+    const identity = await requireIdentity(request);
     const payload = await readJson<CategoryPayload & { sourceChannelId?: string }>(request, 4_096);
     const serverId = cleanText(payload.serverId || DEFAULT_SERVER_ID, { max: 80 });
     const categoryId = cleanText(payload.id, { max: 100 });

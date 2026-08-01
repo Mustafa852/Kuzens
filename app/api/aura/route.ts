@@ -92,7 +92,7 @@ function isAuraActive(expiresAt: string | null | undefined) {
 
 export async function GET(request: Request) {
   try {
-    const identity = requireIdentity(request);
+    const identity = await requireIdentity(request);
     const profile = await requireProfile(identity);
     const db = getDb();
     const serverId = new URL(request.url).searchParams.get("serverId");
@@ -214,7 +214,7 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   try {
     assertTrustedMutation(request);
-    const identity = requireIdentity(request);
+    const identity = await requireIdentity(request);
     const profile = await requireProfile(identity);
     const payload = await readJson<AuraPayload>(request, 8_192);
     const db = getDb();

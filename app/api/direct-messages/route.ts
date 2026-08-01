@@ -103,7 +103,7 @@ async function requireConversationUnblocked(
 
 export async function GET(request: Request) {
   try {
-    const identity = requireIdentity(request);
+    const identity = await requireIdentity(request);
     const profile = await requireProfile(identity);
     const db = getDb();
     const url = new URL(request.url);
@@ -324,7 +324,7 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   try {
     assertTrustedMutation(request);
-    const identity = requireIdentity(request);
+    const identity = await requireIdentity(request);
     const profile = await requireProfile(identity);
     const payload = await readJson<DirectPayload>(request, 16_384);
     const db = getDb();
@@ -746,7 +746,7 @@ export async function POST(request: Request) {
 export async function PATCH(request: Request) {
   try {
     assertTrustedMutation(request);
-    const identity = requireIdentity(request);
+    const identity = await requireIdentity(request);
     const profile = await requireProfile(identity);
     await enforceRateLimit(request, "dm-edit", identity.email, 30, 60_000);
     const payload = await readJson<DirectPayload>(request, 8_192);
@@ -787,7 +787,7 @@ export async function PATCH(request: Request) {
 export async function DELETE(request: Request) {
   try {
     assertTrustedMutation(request);
-    const identity = requireIdentity(request);
+    const identity = await requireIdentity(request);
     const profile = await requireProfile(identity);
     await enforceRateLimit(request, "dm-delete", identity.email, 30, 60_000);
     const payload = await readJson<DirectPayload>(request, 4_096);

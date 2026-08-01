@@ -15,7 +15,7 @@ function decodeEmoji(value: unknown) {
 
 export async function GET(request: Request) {
   try {
-    const identity = requireIdentity(request);
+    const identity = await requireIdentity(request);
     const serverId = cleanText(new URL(request.url).searchParams.get("server") || DEFAULT_SERVER_ID, { max: 80 });
     const { db } = await requireMember(identity, serverId);
     const emojis = await db.select().from(customEmojis).where(eq(customEmojis.serverId, serverId)).orderBy(asc(customEmojis.name));
@@ -28,7 +28,7 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   try {
     assertTrustedMutation(request);
-    const identity = requireIdentity(request);
+    const identity = await requireIdentity(request);
     const payload = await readJson<{ serverId?: string; name?: string; dataUrl?: string }>(request, 500_000);
     const serverId = cleanText(payload.serverId || DEFAULT_SERVER_ID, { max: 80 });
     const { db, profile } = await requireMember(identity, serverId);
@@ -60,7 +60,7 @@ export async function POST(request: Request) {
 export async function DELETE(request: Request) {
   try {
     assertTrustedMutation(request);
-    const identity = requireIdentity(request);
+    const identity = await requireIdentity(request);
     const payload = await readJson<{ serverId?: string; id?: string }>(request, 2_048);
     const serverId = cleanText(payload.serverId || DEFAULT_SERVER_ID, { max: 80 });
     const id = cleanText(payload.id, { max: 80 });

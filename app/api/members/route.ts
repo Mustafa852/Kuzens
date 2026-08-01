@@ -28,7 +28,7 @@ import { avatarUrlFor, bannerUrlFor } from "@/lib/profile-view";
 
 export async function GET(request: Request) {
   try {
-    const identity = requireIdentity(request);
+    const identity = await requireIdentity(request);
     const serverId = cleanText(
       new URL(request.url).searchParams.get("server") || DEFAULT_SERVER_ID,
       { max: 80 },
@@ -141,7 +141,7 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   try {
     assertTrustedMutation(request);
-    const identity = requireIdentity(request);
+    const identity = await requireIdentity(request);
     const payload = await readJson<{
       serverId?: string;
       profileId?: string;

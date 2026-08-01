@@ -55,7 +55,7 @@ async function threadWithServer(threadId: string) {
 
 export async function GET(request: Request) {
   try {
-    const identity = requireIdentity(request);
+    const identity = await requireIdentity(request);
     const threadId = cleanText(
       new URL(request.url).searchParams.get("thread"),
       { max: 80 },
@@ -150,7 +150,7 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   try {
     assertTrustedMutation(request);
-    const identity = requireIdentity(request);
+    const identity = await requireIdentity(request);
     const payload = await readJson<ThreadPayload>(request, 8_192);
 
     if (payload.action === "create") {
@@ -272,7 +272,7 @@ export async function POST(request: Request) {
 export async function PATCH(request: Request) {
   try {
     assertTrustedMutation(request);
-    const identity = requireIdentity(request);
+    const identity = await requireIdentity(request);
     const payload = await readJson<ThreadPayload>(request, 4_096);
     const threadId = cleanText(payload.threadId, { max: 80 });
     const row = await threadWithServer(threadId);
@@ -309,7 +309,7 @@ export async function PATCH(request: Request) {
 export async function DELETE(request: Request) {
   try {
     assertTrustedMutation(request);
-    const identity = requireIdentity(request);
+    const identity = await requireIdentity(request);
     const payload = await readJson<ThreadPayload>(request, 2_048);
     const messageId = cleanText(payload.messageId, { max: 80 });
     const db = getDb();

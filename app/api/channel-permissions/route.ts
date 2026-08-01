@@ -64,7 +64,7 @@ async function scopedChannel(
 
 export async function GET(request: Request) {
   try {
-    const identity = requireIdentity(request);
+    const identity = await requireIdentity(request);
     const url = new URL(request.url);
     const serverId = cleanText(
       url.searchParams.get("server") || DEFAULT_SERVER_ID,
@@ -115,7 +115,7 @@ export async function GET(request: Request) {
 export async function PUT(request: Request) {
   try {
     assertTrustedMutation(request);
-    const identity = requireIdentity(request);
+    const identity = await requireIdentity(request);
     const payload = await readJson<{
       serverId?: string;
       channelId?: string;

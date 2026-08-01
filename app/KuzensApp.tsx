@@ -11,6 +11,10 @@ import {
   useRef,
   useState,
 } from "react";
+import {
+  deleteKuzensFirebaseUser,
+  signOutKuzensFirebase,
+} from "./firebase-client";
 import "./kuzens.css";
 
 type Channel = {
@@ -1039,6 +1043,8 @@ export function KuzensApp() {
   const [accountDeleteUsername, setAccountDeleteUsername] = useState("");
   const [accountDeleteConfirmation, setAccountDeleteConfirmation] = useState("");
   const [accountDeleting, setAccountDeleting] = useState(false);
+  const [loginCodeEnabled, setLoginCodeEnabled] = useState(false);
+  const [loginCodeSaving, setLoginCodeSaving] = useState(false);
   const [notifications, setNotifications] = useState<MentionNotification[]>([]);
   const [notificationTab, setNotificationTab] = useState<"all" | "mentions" | "replies">("all");
   const [viewingMember, setViewingMember] = useState<Member | null>(null);
@@ -1338,10 +1344,15 @@ export function KuzensApp() {
     apiFetch("/api/profile")
       .then(async (response) => (await response.json()) as {
         profile?: Profile | null;
-        identity?: { displayName?: string; suggestedUsername?: string };
+        identity?: {
+          displayName?: string;
+          suggestedUsername?: string;
+          loginCodeEnabled?: boolean;
+        };
       })
       .then((data) => {
         setProfile(data.profile ?? null);
+        setLoginCodeEnabled(data.identity?.loginCodeEnabled === true);
         setRegistrationName(data.identity?.displayName || "Savaş");
         setRegistrationUsername(data.identity?.suggestedUsername || "savas");
       })
@@ -3998,6 +4009,46 @@ export function KuzensApp() {
     if (emoji) setDraft((current) => `${current}${current && !current.endsWith(" ") ? " " : ""}:${emoji.name}: `);
   }
 
+  async function logoutAccount() {
+    try {
+      await apiFetch("/api/auth/logout", { method: "POST" });
+      await signOutKuzensFirebase().catch(() => undefined);
+    } finally {
+      window.location.assign("/");
+    }
+  }
+
+  async function updateLoginCode(enabled: boolean) {
+    setLoginCodeSaving(true);
+    try {
+      const response = await apiFetch("/api/auth/session", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ loginCodeEnabled: enabled }),
+      });
+      if (!response.ok) {
+        throw new Error(await responseError(response, "Giriş güvenliği güncellenemedi."));
+      }
+      setLoginCodeEnabled(enabled);
+      setToast({
+        text: enabled
+          ? "Girişte e-posta doğrulama kodu açıldı."
+          : "Girişte e-posta doğrulama kodu kapatıldı.",
+        tone: "success",
+      });
+    } catch (settingError) {
+      setToast({
+        text:
+          settingError instanceof Error
+            ? settingError.message
+            : "Giriş güvenliği güncellenemedi.",
+        tone: "danger",
+      });
+    } finally {
+      setLoginCodeSaving(false);
+    }
+  }
+
   async function deleteAccount(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (
@@ -4023,6 +4074,8 @@ export function KuzensApp() {
       if (!response.ok) {
         throw new Error(await responseError(response, "Hesap silinemedi."));
       }
+      await deleteKuzensFirebaseUser().catch(() => undefined);
+      await signOutKuzensFirebase().catch(() => undefined);
       setProfile(null);
       setModal(null);
       window.location.reload();
@@ -4221,7 +4274,6 @@ export function KuzensApp() {
     event.preventDefault();
     setRegistrationSubmitting(true);
     setRegistrationError("");
-    const form = new FormData(event.currentTarget);
 
     try {
       const inviteCode = new URLSearchParams(window.location.search).get("davet");
@@ -4232,10 +4284,6 @@ export function KuzensApp() {
           displayName: registrationName,
           username: registrationUsername,
           inviteCode,
-          birthConfirmed: form.get("birthConfirmed") === "on",
-          termsAccepted: form.get("termsAccepted") === "on",
-          noticeRead: form.get("noticeRead") === "on",
-          communityAccepted: form.get("communityAccepted") === "on",
         }),
       });
       const data = (await response.json()) as { profile?: Profile; error?: string };
@@ -7717,7 +7765,7 @@ export function KuzensApp() {
               <button onClick={openFriends}><span>♧</span>Arkadaşlar ve gizlilik</button>
               <button onClick={openAura}><span>✦</span>Kuzens Aura</button>
               <a href="/hukuk"><span>⌁</span>Gizlilik ve hukuk</a>
-              <a href="/signout-with-chatgpt?return_to=/"><span>↪</span>Oturumu kapat</a>
+              <button type="button" onClick={() => void logoutAccount()}><span>↪</span>Oturumu kapat</button>
             </aside>
 
             <div className="account-content">
@@ -7759,6 +7807,21 @@ export function KuzensApp() {
                   <small>Kimlerin sana özel mesaj gönderebileceğini seç</small>
                 </button>
               </div>
+
+              <label className="settings-toggle account-security-toggle">
+                <input
+                  type="checkbox"
+                  checked={loginCodeEnabled}
+                  disabled={loginCodeSaving}
+                  onChange={(event) => void updateLoginCode(event.target.checked)}
+                />
+                <span>
+                  <strong>Girişte e-posta doğrulama kodu</strong>
+                  <small>
+                    Açıldığında şifren doğru olsa bile e-postana gönderilen 6 haneli kod istenir.
+                  </small>
+                </span>
+              </label>
 
               <form className="account-danger-zone" onSubmit={deleteAccount}>
                 <div>
@@ -8861,15 +8924,15 @@ export function KuzensApp() {
             </aside>
             <form className="registration-form" onSubmit={registerProfile}>
               <div className="registration-title">
-                <span>ÜCRETSİZ HESAP</span>
-                <h1>Kuzens hesabını oluştur</h1>
-                <p>Şifre istemiyoruz; güvenli giriş mevcut doğrulanmış hesabın üzerinden yapılır.</p>
+                <span>PROFİLİNİ TAMAMLA</span>
+                <h1>Kuzens’te nasıl görüneceksin?</h1>
+                <p>E-postan doğrulandı. Şimdi görünen adını ve benzersiz kullanıcı adını seç.</p>
               </div>
               <div className="registration-trust">
                 <span>✓</span>
                 <div>
                   <strong>Doğrulanmış kimlik oturumu</strong>
-                  <small>Parolan Kuzens sunucularına gönderilmez veya kaydedilmez.</small>
+                  <small>Şifren güvenli kimlik sağlayıcısında korunur ve Kuzens veritabanına yazılmaz.</small>
                 </div>
               </div>
               <label>
@@ -8888,15 +8951,9 @@ export function KuzensApp() {
                 <div className="username-field"><span>@</span><input required minLength={3} maxLength={24} pattern="[a-z0-9_]+" value={registrationUsername} onChange={(event) => setRegistrationUsername(event.target.value.toLocaleLowerCase("en-US").replace(/[^a-z0-9_]/g, ""))} /></div>
                 <small>Yalnızca küçük harf, rakam ve alt çizgi.</small>
               </label>
-              <div className="legal-checks">
-                <label><input name="birthConfirmed" type="checkbox" required /><i /><span>18 yaşını doldurduğumu doğruluyorum.</span></label>
-                <label><input name="termsAccepted" type="checkbox" required /><i /><span><a href="/hukuk/kullanim-kosullari" target="_blank">Kullanım Koşulları</a>nı kabul ediyorum.</span></label>
-                <label><input name="communityAccepted" type="checkbox" required /><i /><span><a href="/hukuk/topluluk-kurallari" target="_blank">Topluluk Kuralları</a>nı kabul ediyorum.</span></label>
-                <label><input name="noticeRead" type="checkbox" required /><i /><span><a href="/hukuk/aydinlatma" target="_blank">KVKK Aydınlatma Metni</a>ni okudum. Bu bir açık rıza beyanı değildir.</span></label>
-              </div>
               {registrationError && <div className="registration-error">{registrationError}</div>}
               <button className="registration-submit" disabled={registrationSubmitting}>
-                {registrationSubmitting ? "Hesabın oluşturuluyor…" : "Hesabı oluştur ve devam et"}
+                {registrationSubmitting ? "Profilin oluşturuluyor…" : "Profili oluştur ve devam et"}
               </button>
               <p className="registration-foot">Gizliliğini nasıl koruduğumuzu <a href="/hukuk/gizlilik" target="_blank">Gizlilik Politikası</a>nda anlatıyoruz.</p>
             </form>

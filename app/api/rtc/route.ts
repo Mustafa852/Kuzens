@@ -26,7 +26,7 @@ type SignalPayload = {
 
 export async function GET(request: Request) {
   try {
-    const identity = requireIdentity(request);
+    const identity = await requireIdentity(request);
     const url = new URL(request.url);
     const syncBoundary = new Date().toISOString();
     const serverId = cleanText(url.searchParams.get("server") || DEFAULT_SERVER_ID, { max: 80 });
@@ -81,7 +81,7 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   try {
     assertTrustedMutation(request);
-    const identity = requireIdentity(request);
+    const identity = await requireIdentity(request);
     const body = await readJson<SignalPayload>(request, 32_768);
     const serverId = cleanText(body.serverId || DEFAULT_SERVER_ID, { max: 80 });
     const { db, profile } = await requireMember(identity, serverId);

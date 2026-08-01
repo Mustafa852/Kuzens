@@ -41,7 +41,7 @@ function parseReminder(value: unknown) {
 
 export async function GET(request: Request) {
   try {
-    const identity = requireIdentity(request);
+    const identity = await requireIdentity(request);
     const profile = await requireProfile(identity);
     const db = getDb();
     const rows = await db
@@ -106,7 +106,7 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   try {
     assertTrustedMutation(request);
-    const identity = requireIdentity(request);
+    const identity = await requireIdentity(request);
     const profile = await requireProfile(identity);
     await enforceRateLimit(request, "bookmark-save", identity.email, 40, 60_000);
     const payload = await readJson<BookmarkPayload>(request, 4_096);
@@ -147,7 +147,7 @@ export async function POST(request: Request) {
 export async function DELETE(request: Request) {
   try {
     assertTrustedMutation(request);
-    const identity = requireIdentity(request);
+    const identity = await requireIdentity(request);
     const profile = await requireProfile(identity);
     await enforceRateLimit(request, "bookmark-delete", identity.email, 40, 60_000);
     const payload = await readJson<BookmarkPayload>(request, 2_048);

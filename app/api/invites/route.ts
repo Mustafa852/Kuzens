@@ -35,7 +35,7 @@ function validInvite(invite: typeof invites.$inferSelect | undefined) {
 
 export async function GET(request: Request) {
   try {
-    requireIdentity(request);
+    await requireIdentity(request);
     const code = new URL(request.url).searchParams.get("code")?.toLocaleUpperCase("en-US") || "";
     if (!/^[A-Z2-9]{10}$/.test(code)) {
       return apiJson({ valid: false }, { status: 400 });
@@ -56,7 +56,7 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   try {
     assertTrustedMutation(request);
-    const identity = requireIdentity(request);
+    const identity = await requireIdentity(request);
     const payload = await readJson<{ action?: "create" | "join"; code?: string; serverId?: string }>(
       request,
       2_048,

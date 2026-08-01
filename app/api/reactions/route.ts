@@ -21,7 +21,7 @@ const ALLOWED_REACTIONS = new Set(["👍", "❤️", "😂", "😮", "😢", "�
 export async function POST(request: Request) {
   try {
     assertTrustedMutation(request);
-    const identity = requireIdentity(request);
+    const identity = await requireIdentity(request);
     const payload = await readJson<{
       serverId?: string;
       messageId?: string;

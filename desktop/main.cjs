@@ -14,7 +14,7 @@ const {
 } = require("electron");
 const { autoUpdater } = require("electron-updater");
 
-const APP_URL = process.env.KUZENS_APP_URL || "https://kuzens-chat.ilhanilhan239.chatgpt.site/";
+const APP_URL = process.env.KUZENS_APP_URL || "https://stromv2.com.tr/";
 const APP_ORIGIN = new URL(APP_URL).origin;
 const APP_HOSTNAME = new URL(APP_URL).hostname;
 const SESSION_PARTITION = "persist:kuzens";

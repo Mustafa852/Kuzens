@@ -1,5 +1,8 @@
 import { and, eq, or } from "drizzle-orm";
 import {
+  authAccounts,
+  authChallenges,
+  authSessions,
   auraCodes,
   auraMemberships,
   auraRedemptions,
@@ -49,7 +52,7 @@ import { getUploads } from "@/lib/storage";
 export async function DELETE(request: Request) {
   try {
     assertTrustedMutation(request);
-    const identity = requireIdentity(request);
+    const identity = await requireIdentity(request);
     const profile = await requireProfile(identity);
     await enforceRateLimit(
       request,
@@ -243,6 +246,16 @@ export async function DELETE(request: Request) {
     if (profile.bannerKey) {
       await getUploads().delete(profile.bannerKey).catch(() => undefined);
     }
+
+    await db
+      .delete(authChallenges)
+      .where(eq(authChallenges.firebaseUid, identity.firebaseUid));
+    await db
+      .delete(authSessions)
+      .where(eq(authSessions.firebaseUid, identity.firebaseUid));
+    await db
+      .delete(authAccounts)
+      .where(eq(authAccounts.firebaseUid, identity.firebaseUid));
 
     return apiJson({ ok: true });
   } catch (error) {

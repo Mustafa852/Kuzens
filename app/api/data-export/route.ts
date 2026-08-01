@@ -13,7 +13,7 @@ import { apiError, requireIdentity } from "@/lib/security";
 
 export async function GET(request: Request) {
   try {
-    const identity = requireIdentity(request);
+    const identity = await requireIdentity(request);
     const profile = await requireProfile(identity);
     const { getDb } = await import("@/db");
     const db = getDb();

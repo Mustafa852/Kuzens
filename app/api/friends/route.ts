@@ -25,7 +25,7 @@ function relationshipId(first: string, second: string) {
 
 export async function GET(request: Request) {
   try {
-    const identity = requireIdentity(request);
+    const identity = await requireIdentity(request);
     const profile = await requireProfile(identity);
     const db = getDb();
     const rows = await db
@@ -76,7 +76,7 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   try {
     assertTrustedMutation(request);
-    const identity = requireIdentity(request);
+    const identity = await requireIdentity(request);
     const profile = await requireProfile(identity);
     await enforceRateLimit(request, "friend-action", identity.email, 20, 24 * 60 * 60_000);
     const payload = await readJson<FriendPayload>(request, 4_096);

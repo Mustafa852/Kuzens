@@ -15,13 +15,10 @@ export class ApiError extends Error {
   }
 }
 
-export function requireIdentity(request: Request): RequestIdentity {
-  const identity = getRequestIdentity(request);
-  const host = new URL(request.url).hostname;
-  const local = host === "localhost" || host === "127.0.0.1";
-
-  if (identity.isPrivateFallback && !local) {
-    throw new ApiError(401, "Bu işlem için güvenli giriş gerekiyor.");
+export async function requireIdentity(request: Request): Promise<RequestIdentity> {
+  const identity = await getRequestIdentity(request);
+  if (!identity) {
+    throw new ApiError(401, "Bu işlem için Kuzens hesabına giriş yapmalısın.");
   }
   return identity;
 }

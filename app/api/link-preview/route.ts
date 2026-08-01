@@ -263,7 +263,7 @@ function clientPreview(url: string, preview: Preview) {
 
 export async function GET(request: Request) {
   try {
-    const identity = requireIdentity(request);
+    const identity = await requireIdentity(request);
     await requireProfile(identity);
     const requestUrl = new URL(request.url);
     const image = requestUrl.searchParams.get("image");

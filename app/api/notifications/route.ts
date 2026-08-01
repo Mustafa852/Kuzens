@@ -20,7 +20,7 @@ import { getDb } from "@/db";
 
 export async function GET(request: Request) {
   try {
-    const identity = requireIdentity(request);
+    const identity = await requireIdentity(request);
     const profile = await requireProfile(identity);
     const db = getDb();
     await enforceRateLimit(request, "notifications-list", identity.email, 30, 60_000);
@@ -127,7 +127,7 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   try {
     assertTrustedMutation(request);
-    const identity = requireIdentity(request);
+    const identity = await requireIdentity(request);
     const profile = await requireProfile(identity);
     await enforceRateLimit(request, "notifications-read", identity.email, 30, 60_000);
     const payload = await readJson<{ id?: string; all?: boolean }>(request, 2_048);

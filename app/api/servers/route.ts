@@ -81,7 +81,7 @@ function serverSlug(name: string) {
 
 export async function GET(request: Request) {
   try {
-    const identity = requireIdentity(request);
+    const identity = await requireIdentity(request);
     const profile = await requireProfile(identity);
     const db = getDb();
     const memberships = await db
@@ -104,7 +104,7 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   try {
     assertTrustedMutation(request);
-    const identity = requireIdentity(request);
+    const identity = await requireIdentity(request);
     const profile = await requireProfile(identity);
     await enforceRateLimit(request, "server-create", identity.email, 3, 24 * 60 * 60_000);
     const payload = await readJson<ServerPayload>(request, 4_096);
@@ -190,7 +190,7 @@ export async function POST(request: Request) {
 export async function PATCH(request: Request) {
   try {
     assertTrustedMutation(request);
-    const identity = requireIdentity(request);
+    const identity = await requireIdentity(request);
     await enforceRateLimit(request, "server-update", identity.email, 20, 60 * 60_000);
     const payload = await readJson<ServerPayload>(request, 4_096);
     const id = cleanText(payload.id, { max: 80 });
@@ -249,7 +249,7 @@ export async function PATCH(request: Request) {
 export async function DELETE(request: Request) {
   try {
     assertTrustedMutation(request);
-    const identity = requireIdentity(request);
+    const identity = await requireIdentity(request);
     const profile = await requireProfile(identity);
     await enforceRateLimit(request, "server-delete", identity.email, 3, 24 * 60 * 60_000);
     const payload = await readJson<ServerPayload>(request, 2_048);

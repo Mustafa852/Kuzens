@@ -77,7 +77,7 @@ function occurrencesFor(event: typeof communityEvents.$inferSelect) {
 
 export async function GET(request: Request) {
   try {
-    const identity = requireIdentity(request);
+    const identity = await requireIdentity(request);
     const serverId = cleanText(
       new URL(request.url).searchParams.get("server") || DEFAULT_SERVER_ID,
       { max: 80 },
@@ -133,7 +133,7 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   try {
     assertTrustedMutation(request);
-    const identity = requireIdentity(request);
+    const identity = await requireIdentity(request);
     const payload = await readJson<EventPayload>(request, 12_000);
     const serverId = cleanText(payload.serverId || DEFAULT_SERVER_ID, { max: 80 });
     const { db, profile } = await requireMember(identity, serverId);
@@ -244,7 +244,7 @@ export async function POST(request: Request) {
 export async function DELETE(request: Request) {
   try {
     assertTrustedMutation(request);
-    const identity = requireIdentity(request);
+    const identity = await requireIdentity(request);
     const payload = await readJson<EventPayload>(request, 4_096);
     const serverId = cleanText(payload.serverId || DEFAULT_SERVER_ID, { max: 80 });
     const { db, profile } = await requireMember(identity, serverId);

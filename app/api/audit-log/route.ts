@@ -15,7 +15,7 @@ import {
 
 export async function GET(request: Request) {
   try {
-    const identity = requireIdentity(request);
+    const identity = await requireIdentity(request);
     const serverId = cleanText(
       new URL(request.url).searchParams.get("server") || DEFAULT_SERVER_ID,
       { max: 80 },

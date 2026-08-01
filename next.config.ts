@@ -14,7 +14,7 @@ const nextConfig: NextConfig = {
       "style-src 'self' 'unsafe-inline'",
       "img-src 'self' data: https://i.ytimg.com https://cdn.akamai.steamstatic.com",
       "font-src 'self' data:",
-      "connect-src 'self'",
+      "connect-src 'self' https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://www.googleapis.com",
       "media-src 'self' blob:",
       "worker-src 'self' blob:",
       "manifest-src 'self'",

@@ -40,7 +40,7 @@ type PollPayload = {
 export async function POST(request: Request) {
   try {
     assertTrustedMutation(request);
-    const identity = requireIdentity(request);
+    const identity = await requireIdentity(request);
     const payload = await readJson<PollPayload>(request, 12_000);
 
     if (payload.action === "vote") {
@@ -207,7 +207,7 @@ export async function POST(request: Request) {
 export async function PATCH(request: Request) {
   try {
     assertTrustedMutation(request);
-    const identity = requireIdentity(request);
+    const identity = await requireIdentity(request);
     const payload = await readJson<PollPayload>(request, 2_048);
     const pollId = cleanText(payload.pollId, { max: 80 });
     const db = getDb();
