@@ -1,0 +1,11 @@
+{
+  "name": "kuzens-desktop",
+  "version": "1.0.0",
+  "description": "Kuzens Windows uygulaması",
+  "main": "main.cjs",
+  "author": "Kuzens",
+  "private": true,
+  "dependencies": {
+    "electron-updater": "6.8.9"
+  }
+}
