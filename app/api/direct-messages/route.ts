@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, or } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, lte, or } from "drizzle-orm";
 import {
   directConversationMembers,
   directConversationReads,
@@ -104,6 +104,7 @@ async function requireConversationUnblocked(
 export async function GET(request: Request) {
   try {
     const identity = await requireIdentity(request);
+    await enforceRateLimit(request, "direct-message-sync", identity.email, 180, 60_000);
     const profile = await requireProfile(identity);
     const db = getDb();
     const url = new URL(request.url);
@@ -112,30 +113,71 @@ export async function GET(request: Request) {
     if (conversationId) {
       const id = cleanText(conversationId, { max: 80 });
       await requireConversationMember(db, id, profile.id);
-      const rows = await db
-        .select({
-          id: directMessages.id,
-          conversationId: directMessages.conversationId,
-          authorProfileId: directMessages.authorProfileId,
-          authorName: profiles.displayName,
-          authorUsername: profiles.username,
-          authorAvatarKey: profiles.avatarKey,
-          content: directMessages.content,
-          pinned: directMessages.pinned,
-          editedAt: directMessages.editedAt,
-          deletedAt: directMessages.deletedAt,
-          createdAt: directMessages.createdAt,
-        })
-        .from(directMessages)
-        .innerJoin(profiles, eq(directMessages.authorProfileId, profiles.id))
-        .where(eq(directMessages.conversationId, id))
-        .orderBy(desc(directMessages.createdAt))
-        .limit(250);
+      const after = url.searchParams.get("after");
+      const requestedWait = Number(url.searchParams.get("wait") || 0);
+      const waitMs = Number.isFinite(requestedWait)
+        ? Math.min(15_000, Math.max(0, Math.trunc(requestedWait)))
+        : 0;
+      const afterDate = after ? new Date(after) : null;
+      if (afterDate && Number.isNaN(afterDate.getTime())) {
+        throw new ApiError(400, "Geçersiz eşitleme zamanı.");
+      }
+      const waitUntil = Date.now() + (afterDate ? waitMs : 0);
+      let boundary = new Date().toISOString();
+      let rows: Array<{
+        id: string;
+        conversationId: string;
+        authorProfileId: string;
+        authorName: string;
+        authorUsername: string;
+        authorAvatarKey: string | null;
+        content: string;
+        pinned: boolean;
+        editedAt: string | null;
+        deletedAt: string | null;
+        createdAt: string;
+      }> = [];
+      do {
+        boundary = new Date().toISOString();
+        rows = await db
+          .select({
+            id: directMessages.id,
+            conversationId: directMessages.conversationId,
+            authorProfileId: directMessages.authorProfileId,
+            authorName: profiles.displayName,
+            authorUsername: profiles.username,
+            authorAvatarKey: profiles.avatarKey,
+            content: directMessages.content,
+            pinned: directMessages.pinned,
+            editedAt: directMessages.editedAt,
+            deletedAt: directMessages.deletedAt,
+            createdAt: directMessages.createdAt,
+          })
+          .from(directMessages)
+          .innerJoin(profiles, eq(directMessages.authorProfileId, profiles.id))
+          .where(
+            afterDate
+              ? and(
+                  eq(directMessages.conversationId, id),
+                  gt(directMessages.createdAt, afterDate.toISOString()),
+                  lte(directMessages.createdAt, boundary),
+                )
+              : eq(directMessages.conversationId, id),
+          )
+          .orderBy(afterDate ? asc(directMessages.createdAt) : desc(directMessages.createdAt))
+          .limit(afterDate ? 100 : 250);
+        if (rows.length || Date.now() >= waitUntil || request.signal.aborted) break;
+        await new Promise((resolve) =>
+          setTimeout(resolve, Math.min(450, Math.max(25, waitUntil - Date.now()))),
+        );
+      } while (Date.now() < waitUntil);
+      const orderedRows = afterDate ? rows : rows.reverse();
       return apiJson({
-        messages: rows.reverse().map(({ authorAvatarKey, ...message }) => ({
+        messages: orderedRows.map(({ authorAvatarKey, ...message }) => ({
           ...message,
           authorAvatarUrl: avatarUrlFor(message.authorProfileId, authorAvatarKey),
         })),
+        syncedAt: boundary,
       });
     }
 

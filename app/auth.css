@@ -70,6 +70,41 @@
 .auth-security-note span { display: grid; gap: 2px; }
 .auth-security-note b { color: #e5e1ee; }
 
+.auth-registration-note {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 12px;
+  border: 1px solid rgba(91, 227, 154, 0.18);
+  border-radius: 11px;
+  background: rgba(91, 227, 154, 0.055);
+  color: #8f899b;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.auth-registration-note > i {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 9px;
+  background: rgba(91, 227, 154, 0.12);
+  color: #68dfaa;
+  font-style: normal;
+  font-weight: 850;
+}
+
+.auth-registration-note > span {
+  display: grid;
+  gap: 1px;
+}
+
+.auth-registration-note strong {
+  color: #dff9ed;
+}
+
 .auth-panel { display: grid; min-height: 100dvh; place-items: center; padding: 42px; background: radial-gradient(circle at 50% 5%, rgba(124,92,255,.12), transparent 28%), #0d0c12; }
 .auth-card { width: min(100%, 560px); }
 .auth-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; margin-bottom: 34px; padding: 5px; border: 1px solid rgba(255,255,255,.08); border-radius: 13px; background: #131119; }

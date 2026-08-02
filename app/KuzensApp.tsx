@@ -77,6 +77,7 @@ type ChatMessage = {
   poll?: PollData | null;
   thread?: ThreadSummary | null;
   attachments?: MessageAttachment[];
+  pending?: boolean;
 };
 
 type ThreadSummary = {
@@ -351,6 +352,7 @@ type DirectMessage = {
   editedAt?: string | null;
   deletedAt?: string | null;
   createdAt: string;
+  pending?: boolean;
 };
 
 type AuditEntry = {
@@ -699,6 +701,12 @@ async function writeClipboardText(value: string) {
 }
 
 function mergeMessages(current: ChatMessage[], incoming: ChatMessage[]) {
+  const merged = new Map(current.map((message) => [message.id, message]));
+  for (const message of incoming) merged.set(message.id, message);
+  return Array.from(merged.values()).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
+function mergeDirectMessages(current: DirectMessage[], incoming: DirectMessage[]) {
   const merged = new Map(current.map((message) => [message.id, message]));
   for (const message of incoming) merged.set(message.id, message);
   return Array.from(merged.values()).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
@@ -1391,6 +1399,9 @@ export function KuzensApp() {
     (total, conversation) => total + (conversation.unreadCount || 0),
     directRequests.length,
   );
+  const pendingFriendCount = friendItems.filter(
+    (item) => item.status === "pending" && item.direction === "incoming",
+  ).length;
   const bookmarkReminderCount = savedMessages.filter((item) => item.reminderDue).length;
   const channelDraftKey = `channel:${activeServerId}:${activeChannel}`;
   const directDraftKey = `direct:${activeDirectConversationId || "none"}`;
@@ -1683,7 +1694,10 @@ export function KuzensApp() {
           server: activeServerId,
         });
         const fullSync = initial || !syncedAt || Date.now() - lastFullSync > 15_000;
-        if (!fullSync) query.set("after", syncedAt);
+        if (!fullSync) {
+          query.set("after", syncedAt);
+          query.set("wait", "12000");
+        }
         const response = await apiFetch(`/api/messages?${query.toString()}`);
         if (!response.ok) return;
         const data = (await response.json()) as {
@@ -1709,6 +1723,8 @@ export function KuzensApp() {
             ];
           });
         }
+      } catch {
+        // A short retry below covers transient offline and deployment handoff windows.
       } finally {
         syncing = false;
         if (!cancelled && initial) setLoadingMessages(false);
@@ -1717,7 +1733,7 @@ export function KuzensApp() {
     void syncMessages(true);
     const timer = window.setInterval(() => {
       if (document.visibilityState === "visible") void syncMessages(false);
-    }, 2_500);
+    }, 750);
     const catchUp = () => {
       if (document.visibilityState === "visible") void syncMessages(false);
     };
@@ -1875,19 +1891,40 @@ export function KuzensApp() {
     let stopped = false;
     let syncingDirect = false;
     let lastMarkedMessageId = "";
-    async function sync() {
+    let syncedAt = "";
+    let lastFullSync = 0;
+    async function sync(initial = false) {
       if (syncingDirect || stopped) return;
       syncingDirect = true;
       try {
+        const fullSync = initial || !syncedAt || Date.now() - lastFullSync > 15_000;
+        const query = new URLSearchParams({ conversation: activeDirectConversationId });
+        if (!fullSync) {
+          query.set("after", syncedAt);
+          query.set("wait", "12000");
+        }
         const response = await apiFetch(
-          `/api/direct-messages?conversation=${encodeURIComponent(activeDirectConversationId)}`,
+          `/api/direct-messages?${query.toString()}`,
         );
         if (!response.ok || stopped) return;
-        const data = (await response.json()) as { messages?: DirectMessage[] };
+        const data = (await response.json()) as {
+          messages?: DirectMessage[];
+          syncedAt?: string;
+        };
+        if (data.syncedAt) syncedAt = data.syncedAt;
+        if (fullSync) lastFullSync = Date.now();
         const nextMessages = data.messages || [];
-        setDirectMessages((current) => recordsEqual(current, nextMessages) ? current : nextMessages);
-        const latestMessageId = nextMessages.at(-1)?.id || "empty";
-        if (latestMessageId !== lastMarkedMessageId) {
+        setDirectMessages((current) => {
+          const merged = fullSync
+            ? mergeDirectMessages(
+                nextMessages,
+                current.filter((message) => message.pending),
+              )
+            : mergeDirectMessages(current, nextMessages);
+          return recordsEqual(current, merged) ? current : merged;
+        });
+        const latestMessageId = nextMessages.at(-1)?.id || (fullSync ? "empty" : "");
+        if (latestMessageId && latestMessageId !== lastMarkedMessageId) {
           lastMarkedMessageId = latestMessageId;
           await apiFetch("/api/direct-messages", {
             method: "POST",
@@ -1905,14 +1942,16 @@ export function KuzensApp() {
             ),
           );
         }
+      } catch {
+        // Keep the current conversation visible and retry after the short interval.
       } finally {
         syncingDirect = false;
       }
     }
-    void sync();
+    void sync(true);
     const timer = window.setInterval(() => {
-      if (document.visibilityState === "visible") void sync();
-    }, 2_500);
+      if (document.visibilityState === "visible") void sync(false);
+    }, 750);
     return () => {
       stopped = true;
       window.clearInterval(timer);
@@ -2019,21 +2058,34 @@ export function KuzensApp() {
     if (!profile) return;
     let stopped = false;
     async function syncDirectSummary() {
-      const response = await apiFetch("/api/direct-messages");
-      if (!response.ok || stopped) return;
-      const data = (await response.json()) as {
-        conversations?: DirectConversation[];
-        requests?: DirectConversation[];
-        privacy?: "friends" | "shared_servers" | "none";
-      };
-      setDirectConversations(data.conversations || []);
-      setDirectRequests(data.requests || []);
-      setDirectPrivacy(data.privacy || "friends");
+      try {
+        const [directResponse, friendsResponse] = await Promise.all([
+          apiFetch("/api/direct-messages"),
+          apiFetch("/api/friends"),
+        ]);
+        if (stopped) return;
+        if (directResponse.ok) {
+          const data = (await directResponse.json()) as {
+            conversations?: DirectConversation[];
+            requests?: DirectConversation[];
+            privacy?: "friends" | "shared_servers" | "none";
+          };
+          setDirectConversations(data.conversations || []);
+          setDirectRequests(data.requests || []);
+          setDirectPrivacy(data.privacy || "friends");
+        }
+        if (friendsResponse.ok) {
+          const data = (await friendsResponse.json()) as { friends?: FriendItem[] };
+          setFriendItems(data.friends || []);
+        }
+      } catch {
+        // The next lightweight summary sync retries automatically.
+      }
     }
     void syncDirectSummary();
     const timer = window.setInterval(() => {
       if (document.visibilityState === "visible") void syncDirectSummary();
-    }, 30_000);
+    }, 10_000);
     return () => {
       stopped = true;
       window.clearInterval(timer);
@@ -2927,6 +2979,7 @@ export function KuzensApp() {
       content,
       replyToId: replyingTo?.id || null,
       createdAt: new Date().toISOString(),
+      pending: true,
     };
     setMessages((current) => [...current, optimistic]);
     setDraft("");
@@ -4949,33 +5002,51 @@ export function KuzensApp() {
     event.preventDefault();
     if (!activeDirectConversation || !directDraft.trim()) return;
     const content = directDraft.trim();
+    const optimistic: DirectMessage = {
+      id: `local-direct-${Date.now()}`,
+      conversationId: activeDirectConversation.id,
+      authorProfileId: profile?.id || "local",
+      authorName: profile?.displayName || "Sen",
+      authorUsername: profile?.username || "sen",
+      authorAvatarUrl: profile?.avatarUrl,
+      content,
+      createdAt: new Date().toISOString(),
+      pending: true,
+    };
     setDirectDraft("");
-    const response = await apiFetch("/api/direct-messages", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        action: "send",
-        conversationId: activeDirectConversation.id,
-        content,
-      }),
-    });
-    if (!response.ok) {
+    setDirectMessages((current) => [...current, optimistic]);
+    try {
+      const response = await apiFetch("/api/direct-messages", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          action: "send",
+          conversationId: activeDirectConversation.id,
+          content,
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(await responseError(response, "Özel mesaj gönderilemedi."));
+      }
+      const data = (await response.json()) as { message: DirectMessage };
+      setDirectMessages((current) =>
+        current.map((message) => (message.id === optimistic.id ? data.message : message)),
+      );
+      setDirectConversations((current) =>
+        current.map((conversation) =>
+          conversation.id === activeDirectConversation.id
+            ? { ...conversation, lastMessage: content, updatedAt: data.message.createdAt }
+            : conversation,
+        ),
+      );
+    } catch (error) {
+      setDirectMessages((current) => current.filter((message) => message.id !== optimistic.id));
       setDirectDraft(content);
       setToast({
-        text: await responseError(response, "Özel mesaj gönderilemedi."),
+        text: error instanceof Error ? error.message : "Özel mesaj gönderilemedi.",
         tone: "danger",
       });
-      return;
     }
-    const data = (await response.json()) as { message: DirectMessage };
-    setDirectMessages((current) => [...current, data.message]);
-    setDirectConversations((current) =>
-      current.map((conversation) =>
-        conversation.id === activeDirectConversation.id
-          ? { ...conversation, lastMessage: content, updatedAt: data.message.createdAt }
-          : conversation,
-      ),
-    );
   }
 
   async function editDirectMessage(message: DirectMessage) {
@@ -5717,7 +5788,7 @@ export function KuzensApp() {
         </div>
       )}
       <aside className="server-rail" aria-label="Sunucular">
-        <button className="brand-mark" aria-label="Kuzens ana sayfa">
+        <button className="brand-mark" aria-label="Arkadaşlar ana sayfası" onClick={openFriends} title="Arkadaşlar ana sayfası">
           <span>K</span><b>Z</b>
         </button>
         <div className="rail-line" />
@@ -5735,12 +5806,13 @@ export function KuzensApp() {
             {server.id === activeServerId && <i />}
           </button>
         ))}
-        <button className="server-badge direct" aria-label="Özel mesajlar" onClick={openDirectMessages}>
-          M
+        <button className="server-badge direct social-rail-button" aria-label="Özel mesajlar" title="Özel mesajlar" onClick={openDirectMessages}>
+          <span>✦</span><small>MESAJ</small>
           {directUnreadCount > 0 && <b className="rail-unread">{Math.min(99, directUnreadCount)}</b>}
         </button>
-        <button className="server-badge friends" aria-label="Arkadaşlar" onClick={openFriends}>
-          A
+        <button className="server-badge friends social-rail-button" aria-label="Arkadaşlar" title="Arkadaşlar" onClick={openFriends}>
+          <span>♧</span><small>ARKADAŞ</small>
+          {pendingFriendCount > 0 && <b className="rail-unread friend">{Math.min(99, pendingFriendCount)}</b>}
         </button>
         <button className="server-add" aria-label="Topluluk kur" onClick={() => setModal("server")}>
           +
@@ -6034,6 +6106,16 @@ export function KuzensApp() {
             </span>
           </div>
           <div className="header-spacer" />
+          <div className="social-quick-actions" aria-label="Sosyal menü">
+            <button onClick={openFriends} title="Arkadaşlar">
+              <span>♧</span><b>Arkadaşlar</b>
+              {pendingFriendCount > 0 && <em>{Math.min(99, pendingFriendCount)}</em>}
+            </button>
+            <button onClick={openDirectMessages} title="Özel mesajlar">
+              <span>✦</span><b>Mesajlar</b>
+              {directUnreadCount > 0 && <em>{Math.min(99, directUnreadCount)}</em>}
+            </button>
+          </div>
           {selected?.kind === "voice" ? (
             <button className="join-voice" onClick={toggleVoice}>
               <span>{voiceConnected ? "×" : "◖"}</span>{voiceConnected ? "Ayrıl" : "Sese katıl"}
@@ -6290,7 +6372,7 @@ export function KuzensApp() {
                 return (
                   <article
                     id={`mesaj-${message.id}`}
-                    className={`message ${compact ? "compact" : ""} ${message.mentionedMe ? "mentioned" : ""} ${message.pinned ? "pinned" : ""}`}
+                    className={`message ${compact ? "compact" : ""} ${message.mentionedMe ? "mentioned" : ""} ${message.pinned ? "pinned" : ""} ${message.pending ? "pending" : ""}`}
                     key={message.id}
                     onContextMenu={(event) =>
                       openContextMenu(event, { kind: "message", message })
@@ -6306,6 +6388,7 @@ export function KuzensApp() {
                           <strong>{message.authorName}</strong>
                           <span>{message.authorTag}</span>
                           <time>{timeLabel(message.createdAt)}</time>
+                          {message.pending && <small className="message-sending">gönderiliyor…</small>}
                         </div>
                       )}
                       {compact && <time className="compact-time">{timeLabel(message.createdAt)}</time>}
@@ -6906,7 +6989,7 @@ export function KuzensApp() {
                       return (
                         <article
                           key={message.id}
-                          className={`direct-message ${compact ? "compact" : ""}`}
+                          className={`direct-message ${compact ? "compact" : ""} ${message.pending ? "pending" : ""}`}
                         >
                           {!compact && (
                             <Avatar
@@ -6921,6 +7004,7 @@ export function KuzensApp() {
                               <header>
                                 <strong>{message.authorName}</strong>
                                 <time>{timeLabel(message.createdAt)}</time>
+                                {message.pending && <small className="message-sending">gönderiliyor…</small>}
                               </header>
                             )}
                             <p className={message.deletedAt ? "deleted" : ""}>
@@ -6930,7 +7014,7 @@ export function KuzensApp() {
                             {!message.deletedAt && message.content && <LinkEmbed content={message.content} />}
                             {message.pinned && <small className="direct-pinned-label">◆ Sabitlenen mesaj</small>}
                           </div>
-                          {!message.deletedAt && (
+                          {!message.deletedAt && !message.pending && (
                             <span className="direct-message-actions">
                               <button onClick={() => void pinDirectMessage(message)}>{message.pinned ? "Sabitleme" : "Sabitle"}</button>
                               {message.authorProfileId === profile?.id && (
@@ -7047,6 +7131,7 @@ export function KuzensApp() {
               {(["online", "all", "pending", "blocked"] as const).map((tab) => (
                 <button type="button" role="tab" aria-selected={friendTab === tab} className={friendTab === tab ? "active" : ""} key={tab} onClick={() => setFriendTab(tab)}>
                   {tab === "online" ? "Çevrimiçi" : tab === "all" ? "Tümü" : tab === "pending" ? "Bekleyen" : "Engellenen"}
+                  {tab === "pending" && pendingFriendCount > 0 && <b>{pendingFriendCount}</b>}
                 </button>
               ))}
             </div>

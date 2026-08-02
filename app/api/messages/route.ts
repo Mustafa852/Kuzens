@@ -271,6 +271,7 @@ async function blockedProfileIdsFor(
 export async function GET(request: Request) {
   try {
     const identity = await requireIdentity(request);
+    await enforceRateLimit(request, "message-sync", identity.email, 180, 60_000);
     const url = new URL(request.url);
     const syncBoundary = new Date().toISOString();
     const serverId = cleanText(url.searchParams.get("server") || DEFAULT_SERVER_ID, { max: 80 });
@@ -301,26 +302,39 @@ export async function GET(request: Request) {
       if (Number.isNaN(afterDate.getTime())) {
         return apiJson({ error: "Geçersiz eşitleme zamanı." }, { status: 400 });
       }
-      const rows = await db
-        .select()
-        .from(messages)
-        .where(
-          and(
-            eq(messages.channelId, channelId),
-            gt(
-              messages.createdAt,
-              historyBoundary && historyBoundary > afterDate.toISOString()
-                ? historyBoundary
-                : afterDate.toISOString(),
+      const requestedWait = Number(url.searchParams.get("wait") || 0);
+      const waitMs = Number.isFinite(requestedWait)
+        ? Math.min(15_000, Math.max(0, Math.trunc(requestedWait)))
+        : 0;
+      const waitUntil = Date.now() + waitMs;
+      const afterBoundary =
+        historyBoundary && historyBoundary > afterDate.toISOString()
+          ? historyBoundary
+          : afterDate.toISOString();
+      let boundary = syncBoundary;
+      let rows: Array<typeof messages.$inferSelect> = [];
+      do {
+        boundary = new Date().toISOString();
+        rows = await db
+          .select()
+          .from(messages)
+          .where(
+            and(
+              eq(messages.channelId, channelId),
+              gt(messages.createdAt, afterBoundary),
+              lte(messages.createdAt, boundary),
             ),
-            lte(messages.createdAt, syncBoundary),
-          ),
-        )
-        .orderBy(asc(messages.createdAt))
-        .limit(100);
+          )
+          .orderBy(asc(messages.createdAt))
+          .limit(100);
+        if (rows.length || Date.now() >= waitUntil || request.signal.aborted) break;
+        await new Promise((resolve) =>
+          setTimeout(resolve, Math.min(450, Math.max(25, waitUntil - Date.now()))),
+        );
+      } while (Date.now() < waitUntil);
       return apiJson({
         messages: await decorateMessages(db, rows, profile.id),
-        syncedAt: syncBoundary,
+        syncedAt: boundary,
       });
     }
 

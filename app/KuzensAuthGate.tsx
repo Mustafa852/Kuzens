@@ -3,6 +3,7 @@
 import {
   createUserWithEmailAndPassword,
   sendPasswordResetEmail,
+  signOut,
   signInWithEmailAndPassword,
   type User,
 } from "firebase/auth";
@@ -155,16 +156,27 @@ export function KuzensAuthGate({ children }: { children: ReactNode }) {
     setBusy(true);
     try {
       const auth = await getKuzensFirebaseAuth();
+      const normalizedEmail = email.trim().toLocaleLowerCase("en-US");
+      if (
+        auth.currentUser?.email &&
+        auth.currentUser.email.toLocaleLowerCase("en-US") !== normalizedEmail
+      ) {
+        await signOut(auth);
+      }
       let user: User;
       try {
-        user = (await createUserWithEmailAndPassword(auth, email.trim(), password)).user;
+        user = (await createUserWithEmailAndPassword(auth, normalizedEmail, password)).user;
       } catch (createError) {
         const createCode =
           typeof createError === "object" && createError && "code" in createError
             ? String((createError as { code?: unknown }).code || "")
             : "";
         if (!createCode.includes("email-already-in-use")) throw createError;
-        user = (await signInWithEmailAndPassword(auth, email.trim(), password)).user;
+        try {
+          user = (await signInWithEmailAndPassword(auth, normalizedEmail, password)).user;
+        } catch {
+          throw new Error("Bu e-posta zaten kayıtlı. Giriş yap sekmesinden devam et.");
+        }
       }
 
       const result = await authRequest(
@@ -316,6 +328,7 @@ export function KuzensAuthGate({ children }: { children: ReactNode }) {
           {mode === "register" && (
             <form onSubmit={submitRegistration}>
               <header><span>ÜCRETSİZ HESAP</span><h2>Kuzens hesabını oluştur</h2><p>E-postanı doğrula, ardından profilini tamamla.</p></header>
+              <div className="auth-registration-note"><i>＋</i><span><strong>Her kullanıcı kendi hesabını açabilir.</strong>Farklı bir e-posta, tamamen ayrı bir Kuzens hesabı oluşturur.</span></div>
               <label>E-POSTA<input type="email" required autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="ornek@eposta.com" /></label>
               <div className="auth-field-grid">
                 <label>ŞİFRE<input type="password" required minLength={10} autoComplete="new-password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="En az 10 karakter" /></label>

@@ -93,6 +93,10 @@ const [accountRoute, channelPermissionsRoute] = await Promise.all([
   readFile(new URL("../app/api/channel-permissions/route.ts", import.meta.url), "utf8"),
 ]);
 const desktopMain = await readFile(new URL("../desktop/main.cjs", import.meta.url), "utf8");
+const authGateSource = await readFile(
+  new URL("../app/KuzensAuthGate.tsx", import.meta.url),
+  "utf8",
+);
 const noiseGateSource = await readFile(
   new URL("../public/audio/kuzens-noise-gate.js", import.meta.url),
   "utf8",
@@ -253,6 +257,30 @@ test("joins voice rooms on click and keeps the connected room independent from c
     appSource,
     /if \(voiceConnected && channel\.kind !== "voice"\)[\s\S]{0,80}toggleVoice/,
   );
+});
+
+test("delivers channel and direct messages with efficient near-realtime sync", () => {
+  assert.match(messagesRoute, /requestedWait/);
+  assert.match(messagesRoute, /Math\.min\(15_000/);
+  assert.match(messagesRoute, /setTimeout\(resolve, Math\.min\(450/);
+  assert.match(directMessagesRoute, /direct-message-sync/);
+  assert.match(directMessagesRoute, /syncedAt: boundary/);
+  assert.match(appSource, /query\.set\("wait", "12000"\)/);
+  assert.match(appSource, /mergeDirectMessages/);
+  assert.match(appSource, /pending: true/);
+  assert.match(appSource, /gönderiliyor…/);
+  assert.match(appStyles, /\.message\.pending/);
+});
+
+test("keeps friends, direct messages, and independent registration easy to discover", () => {
+  assert.match(appSource, /className="social-quick-actions"/);
+  assert.match(appSource, /Arkadaşlar ana sayfası/);
+  assert.match(appSource, /pendingFriendCount/);
+  assert.match(appSource, /className="rail-unread friend"/);
+  assert.match(appStyles, /\.social-quick-actions/);
+  assert.match(authGateSource, /Her kullanıcı kendi hesabını açabilir/);
+  assert.match(authGateSource, /await signOut\(auth\)/);
+  assert.match(authGateSource, /Bu e-posta zaten kayıtlı\. Giriş yap sekmesinden devam et/);
 });
 
 test("ships owner-managed Kuzens Aura codes without storing plaintext codes", () => {
