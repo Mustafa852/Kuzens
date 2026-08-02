@@ -86,6 +86,8 @@ const [
   ]);
 
 const apiRoot = new URL("../app/api/", import.meta.url);
+const authStyles = await readFile(new URL("../app/auth.css", import.meta.url), "utf8");
+const offlineSource = await readFile(new URL("../public/offline.html", import.meta.url), "utf8");
 const mutationRouteSources = await Promise.all(
   (await readdir(apiRoot, { recursive: true }))
     .filter((entry) => entry.endsWith("route.ts"))
@@ -541,6 +543,8 @@ test("ships an installable shell without caching private application data", () =
   assert.match(appSource, /display-mode: standalone/);
   assert.match(serviceWorkerSource, /url\.pathname\.startsWith\("\/api\/"\)\) return/);
   assert.doesNotMatch(serviceWorkerSource, /cache\.put\([^\n]*\/api\//);
+  assert.match(serviceWorkerSource, /caches\.match\("\/offline\.html"\)/);
+  assert.match(offlineSource, /Kuzens burada, internetin biraz geride kaldı/);
   assert.match(layoutSource, /favicon\.svg/);
 });
 
@@ -594,4 +598,25 @@ test("stores validated profile photos privately and renders real presence states
   assert.match(appStyles, /\.presence-dnd/);
   assert.match(appStyles, /\.presence-idle/);
   assert.match(appStyles, /\.presence-invisible/);
+});
+
+test("keeps mobile authentication inside the viewport", () => {
+  assert.match(authStyles, /overflow-x:\s*hidden/);
+  assert.match(authStyles, /\.auth-visual,[\s\S]*\.auth-card\s*\{[\s\S]*min-width:\s*0/);
+  assert.match(authStyles, /env\(safe-area-inset-bottom\)/);
+});
+
+test("preserves failed messages and isolates device drafts per account", () => {
+  assert.match(appSource, /`kuzens-drafts:\$\{profile\.id\}`/);
+  assert.match(appSource, /`kuzens-member-volumes:\$\{profile\.id\}`/);
+  assert.match(appSource, /`kuzens-favorite-channels:\$\{profile\.id\}`/);
+  assert.match(appSource, /function readLocalDrafts/);
+  assert.match(appSource, /function writeLocalJson/);
+  assert.match(appSource, /autoGainControl:\s*saved\.autoGainControl === true/);
+  assert.match(appSource, /Taslağın korundu/);
+  assert.match(appSource, /failedFiles\.length/);
+  assert.match(appSource, /local-\$\{crypto\.randomUUID\(\)\}/);
+  assert.match(appSource, /className="draft-badge">Taslak/);
+  assert.match(appSource, /className=\{`sync-indicator sync-\$\{syncState\}`\}/);
+  assert.match(appStyles, /\.sync-indicator\.sync-offline/);
 });

@@ -1,5 +1,5 @@
-const CACHE = "kuzens-shell-v4";
-const SHELL = ["/favicon.svg", "/icon-192.png", "/icon-512.png", "/kuzens-loading-v1.webp", "/manifest.webmanifest"];
+const CACHE = "kuzens-shell-v5";
+const SHELL = ["/offline.html", "/favicon.svg", "/icon-192.png", "/icon-512.png", "/kuzens-loading-v1.webp", "/manifest.webmanifest"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(SHELL)).catch(() => undefined));
@@ -23,8 +23,9 @@ self.addEventListener("fetch", (event) => {
 
   if (request.mode === "navigate") {
     event.respondWith(
-      fetch(request).catch(
-        () => new Response("Kuzens şu anda çevrimdışı. Bağlantını kontrol edip yeniden dene.", {
+      fetch(request).catch(async () =>
+        (await caches.match("/offline.html")) ||
+        new Response("Kuzens şu anda çevrimdışı. Bağlantını kontrol edip yeniden dene.", {
           status: 503,
           headers: { "content-type": "text/plain; charset=utf-8" },
         }),

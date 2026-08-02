@@ -11,7 +11,15 @@
   display: grid;
   grid-template-columns: minmax(380px, 0.92fr) minmax(520px, 1.08fr);
   min-height: 100dvh;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.auth-visual,
+.auth-panel,
+.auth-card {
+  min-width: 0;
 }
 
 .auth-visual {
@@ -172,6 +180,7 @@
   .auth-mark { width: 44px; height: 44px; border-radius: 14px; }
   .auth-visual-copy { padding-top: 105px; }
   .auth-visual-copy h1 { margin-bottom: 0; font-size: 29px; }
-  .auth-panel { place-items: start stretch; padding: 28px 17px 42px; }
+  .auth-panel { place-items: start stretch; padding: 28px max(17px, env(safe-area-inset-right)) calc(42px + env(safe-area-inset-bottom)) max(17px, env(safe-area-inset-left)); }
+  .auth-card { width: 100%; max-width: 100%; }
   .auth-field-grid { grid-template-columns: 1fr; }
 }
