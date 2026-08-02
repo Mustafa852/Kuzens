@@ -42,6 +42,9 @@ const [
   storeBuildSource,
   storeWorkflowSource,
   releaseWorkflowSource,
+  channelCanvasRoute,
+  scheduledMessagesRoute,
+  scheduledDeliverySource,
 ] =
   await Promise.all([
     readFile(new URL("../app/KuzensApp.tsx", import.meta.url), "utf8"),
@@ -83,6 +86,9 @@ const [
     readFile(new URL("../desktop/electron-builder.store.cjs", import.meta.url), "utf8"),
     readFile(new URL("../.github/workflows/windows-store-package.yml", import.meta.url), "utf8"),
     readFile(new URL("../.github/workflows/windows-release.yml", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/channel-canvas/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/scheduled-messages/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/scheduled-messages.ts", import.meta.url), "utf8"),
   ]);
 
 const apiRoot = new URL("../app/api/", import.meta.url);
@@ -479,6 +485,43 @@ test("ships saved-message reminders and device-level voice personalization", () 
   assert.match(appSource, /className="member-volume"/);
 });
 
+test("adds a persistent channel canvas with channel-scoped permissions", () => {
+  assert.match(schemaSource, /export const channelCanvases/);
+  assert.match(channelCanvasRoute, /requireMember\(identity, serverId\)/);
+  assert.match(channelCanvasRoute, /PERMISSIONS\.viewChannels/);
+  assert.match(channelCanvasRoute, /PERMISSIONS\.manageChannels/);
+  assert.match(channelCanvasRoute, /max:\s*12_000/);
+  assert.match(channelCanvasRoute, /channel\.canvas\.update/);
+  assert.match(appSource, /className="modal-card channel-canvas-modal"/);
+  assert.match(appSource, /Kanal Panosu/);
+  assert.doesNotMatch(appSource, /dangerouslySetInnerHTML/);
+});
+
+test("schedules idempotent messages and rechecks delivery permissions", () => {
+  assert.match(schemaSource, /export const scheduledMessages/);
+  assert.match(scheduledMessagesRoute, /assertTrustedMutation/);
+  assert.match(scheduledMessagesRoute, /checkAutoModeration/);
+  assert.match(scheduledMessagesRoute, /PERMISSIONS\.sendMessages/);
+  assert.match(scheduledMessagesRoute, /message-schedule/);
+  assert.match(scheduledDeliverySource, /channelPermissionsFor/);
+  assert.match(scheduledDeliverySource, /checkAutoModeration/);
+  assert.match(scheduledDeliverySource, /Gönderen artık bu topluluğun üyesi değil/);
+  assert.match(scheduledDeliverySource, /const scheduledMessageId = `scheduled-\$\{row\.id\}`/);
+  assert.match(scheduledDeliverySource, /onConflictDoNothing/);
+  assert.match(messagesRoute, /publishDueScheduledMessages/);
+  assert.match(appSource, /className="modal-card scheduled-modal"/);
+  assert.match(appSource, /Sonra gönder/);
+});
+
+test("offers a low-power mode without slowing active voice signaling", () => {
+  assert.match(appSource, /lowPowerMode:\s*boolean/);
+  assert.match(appSource, /preferences\.lowPowerMode \? 2_500 : 750/);
+  assert.match(appSource, /voiceConnected \? 2_000 : preferences\.lowPowerMode/);
+  assert.match(appSource, /Tasarruf modu/);
+  assert.match(appStyles, /\.app-shell\.low-power/);
+  assert.match(appSource, /pollSignals\(\), 650/);
+});
+
 test("treats user blocks as a channel, notification, and DM boundary", () => {
   assert.match(messagesRoute, /blockedAuthor/);
   assert.match(messagesRoute, /blockedProfileIdsFor/);
@@ -524,6 +567,8 @@ test("supports accessible channel ordering, favorites, and complete deletion cle
   assert.match(serversRoute, /threadMessages/);
   assert.match(serversRoute, /pollVotes/);
   assert.match(serversRoute, /eventRsvps/);
+  assert.match(serversRoute, /channelCanvases/);
+  assert.match(serversRoute, /scheduledMessages/);
 });
 
 test("provides a permissioned and persistent new-member guide", () => {

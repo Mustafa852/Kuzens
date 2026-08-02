@@ -37,6 +37,7 @@ import {
 import { autoModError, checkAutoModeration } from "@/lib/automod";
 import { avatarUrlFor } from "@/lib/profile-view";
 import { getUploads } from "@/lib/storage";
+import { publishDueScheduledMessages } from "@/lib/scheduled-messages";
 
 type MessagePayload = {
   id?: string;
@@ -273,7 +274,6 @@ export async function GET(request: Request) {
     const identity = await requireIdentity(request);
     await enforceRateLimit(request, "message-sync", identity.email, 180, 60_000);
     const url = new URL(request.url);
-    const syncBoundary = new Date().toISOString();
     const serverId = cleanText(url.searchParams.get("server") || DEFAULT_SERVER_ID, { max: 80 });
     const { db, profile } = await requireMember(identity, serverId);
     const channelId = cleanText(url.searchParams.get("channel") || "genel", { max: 80 });
@@ -287,6 +287,8 @@ export async function GET(request: Request) {
       serverId,
       channelId,
     );
+    await publishDueScheduledMessages(db, { channelId, limit: 20 });
+    const syncBoundary = new Date().toISOString();
     const [membership] = await db
       .select({ joinedAt: serverMembers.joinedAt })
       .from(serverMembers)

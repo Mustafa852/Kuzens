@@ -3,6 +3,7 @@ import {
   auraMemberships,
   auditLogs,
   channels,
+  channelCanvases,
   channelCategories,
   channelMemberPermissionOverwrites,
   channelPermissionOverwrites,
@@ -25,6 +26,7 @@ import {
   pollVotes,
   roles,
   rtcSignals,
+  scheduledMessages,
   serverBans,
   serverAutoModerationSettings,
   serverGuideProgress,
@@ -315,6 +317,8 @@ export async function DELETE(request: Request) {
         .delete(channelMemberPermissionOverwrites)
         .where(inArray(channelMemberPermissionOverwrites.channelId, channelIds));
       await db.delete(channelReads).where(inArray(channelReads.channelId, channelIds));
+      await db.delete(channelCanvases).where(inArray(channelCanvases.channelId, channelIds));
+      await db.delete(scheduledMessages).where(inArray(scheduledMessages.channelId, channelIds));
       await db.delete(messages).where(inArray(messages.channelId, channelIds));
     }
     const emojiRows = await db.select().from(customEmojis).where(eq(customEmojis.serverId, id));

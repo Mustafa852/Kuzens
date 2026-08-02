@@ -6,6 +6,7 @@ import {
   memberRoles,
   messageBookmarks,
   messages,
+  scheduledMessages,
   serverMembers,
 } from "@/db/schema";
 import { requireProfile } from "@/lib/community";
@@ -20,12 +21,13 @@ export async function GET(request: Request) {
     const memberships = await db.select().from(serverMembers).where(eq(serverMembers.profileId, profile.id));
     const conversationMemberships = await db.select().from(directConversationMembers).where(eq(directConversationMembers.profileId, profile.id));
     const conversationIds = new Set(conversationMemberships.map((item) => item.conversationId));
-    const [ownMessages, dmRows, roles, friends, bookmarks] = await Promise.all([
+    const [ownMessages, dmRows, roles, friends, bookmarks, scheduled] = await Promise.all([
       db.select().from(messages).where(eq(messages.authorProfileId, profile.id)),
       db.select().from(directMessages).where(eq(directMessages.authorProfileId, profile.id)),
       db.select().from(memberRoles).where(eq(memberRoles.memberTag, `@${profile.username}`)),
       db.select().from(friendships).where(or(eq(friendships.requesterProfileId, profile.id), eq(friendships.addresseeProfileId, profile.id))),
       db.select().from(messageBookmarks).where(eq(messageBookmarks.profileId, profile.id)),
+      db.select().from(scheduledMessages).where(eq(scheduledMessages.authorProfileId, profile.id)),
     ]);
     const payload = {
       exportedAt: new Date().toISOString(),
@@ -51,6 +53,7 @@ export async function GET(request: Request) {
       messages: ownMessages,
       directMessages: dmRows.filter((item) => conversationIds.has(item.conversationId)),
       bookmarks,
+      scheduledMessages: scheduled,
     };
     return new Response(JSON.stringify(payload, null, 2), {
       headers: {

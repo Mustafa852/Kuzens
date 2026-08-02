@@ -1,6 +1,7 @@
 import { and, asc, eq, gt, inArray, isNull, or } from "drizzle-orm";
 import {
   channels,
+  channelCanvases,
   contentReports,
   channelPermissionOverwrites,
   channelNotificationSettings,
@@ -16,6 +17,7 @@ import {
   polls,
   pollVotes,
   rtcSignals,
+  scheduledMessages,
   serverAuraMemberships,
   threadMessages,
 } from "@/db/schema";
@@ -374,6 +376,8 @@ export async function DELETE(request: Request) {
     await db
       .delete(channelNotificationSettings)
       .where(eq(channelNotificationSettings.channelId, id));
+    await db.delete(channelCanvases).where(eq(channelCanvases.channelId, id));
+    await db.delete(scheduledMessages).where(eq(scheduledMessages.channelId, id));
     await db.delete(channelReads).where(eq(channelReads.channelId, id));
     await db
       .delete(channelPermissionOverwrites)

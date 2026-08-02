@@ -7,6 +7,7 @@ import {
   auraMemberships,
   auraRedemptions,
   channelNotificationSettings,
+  channelCanvases,
   channelMemberPermissionOverwrites,
   channelReads,
   directConversationMembers,
@@ -25,6 +26,7 @@ import {
   messages,
   pollVotes,
   profiles,
+  scheduledMessages,
   serverAuraMemberships,
   serverGuideProgress,
   serverMembers,
@@ -148,6 +150,13 @@ export async function DELETE(request: Request) {
     await db
       .delete(threadMessages)
       .where(eq(threadMessages.authorProfileId, profile.id));
+    await db
+      .delete(scheduledMessages)
+      .where(eq(scheduledMessages.authorProfileId, profile.id));
+    await db
+      .update(channelCanvases)
+      .set({ updatedByProfileId: "deleted" })
+      .where(eq(channelCanvases.updatedByProfileId, profile.id));
     await db
       .update(messages)
       .set({

@@ -80,6 +80,53 @@ export const messages = sqliteTable(
   ],
 );
 
+export const scheduledMessages = sqliteTable(
+  "scheduled_messages",
+  {
+    id: text("id").primaryKey(),
+    serverId: text("server_id").notNull(),
+    channelId: text("channel_id").notNull(),
+    authorProfileId: text("author_profile_id").notNull(),
+    content: text("content").notNull(),
+    replyToId: text("reply_to_id"),
+    sendAt: text("send_at").notNull(),
+    status: text("status", {
+      enum: ["pending", "sent", "cancelled", "failed"],
+    })
+      .notNull()
+      .default("pending"),
+    sentMessageId: text("sent_message_id"),
+    failureReason: text("failure_reason"),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [
+    index("scheduled_messages_channel_due_idx").on(
+      table.channelId,
+      table.status,
+      table.sendAt,
+    ),
+    index("scheduled_messages_author_due_idx").on(
+      table.authorProfileId,
+      table.status,
+      table.sendAt,
+    ),
+  ],
+);
+
+export const channelCanvases = sqliteTable(
+  "channel_canvases",
+  {
+    channelId: text("channel_id").primaryKey(),
+    serverId: text("server_id").notNull(),
+    title: text("title").notNull(),
+    content: text("content").notNull().default(""),
+    updatedByProfileId: text("updated_by_profile_id").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [index("channel_canvases_server_idx").on(table.serverId)],
+);
+
 export const profiles = sqliteTable(
   "profiles",
   {

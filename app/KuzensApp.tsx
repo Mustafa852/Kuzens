@@ -311,6 +311,7 @@ type AppPreferences = {
   highContrast: boolean;
   reducedMotion: boolean;
   focusMode: boolean;
+  lowPowerMode: boolean;
   pushToTalk: boolean;
   inputDeviceId: string;
   echoCancellation: boolean;
@@ -440,6 +441,30 @@ type SavedMessage = {
   };
 };
 
+type ChannelCanvas = {
+  channelId: string;
+  title: string;
+  content: string;
+  updatedAt: string | null;
+  updatedByName: string | null;
+};
+
+type ScheduledMessage = {
+  id: string;
+  serverId: string;
+  channelId: string;
+  channelName: string;
+  serverName?: string;
+  content: string;
+  replyToId?: string | null;
+  sendAt: string;
+  status: "pending" | "sent" | "cancelled" | "failed";
+  sentMessageId?: string | null;
+  failureReason?: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
 type ServerGuideData = {
   welcomeMessage: string;
   rulesChannelId: string | null;
@@ -451,6 +476,7 @@ const defaultPreferences: AppPreferences = {
   highContrast: false,
   reducedMotion: false,
   focusMode: false,
+  lowPowerMode: false,
   pushToTalk: false,
   inputDeviceId: "",
   echoCancellation: true,
@@ -1291,7 +1317,7 @@ export function KuzensApp() {
   const [toast, setToast] = useState<Toast | null>(null);
   const [copyFallback, setCopyFallback] = useState<CopyFallback | null>(null);
   const [modal, setModal] = useState<
-    "channel" | "category" | "channelSettings" | "channelNotifications" | "roles" | "server" | "serverSettings" | "friends" | "account" | "profile" | "memberProfile" | "notifications" | "aura" | "preferences" | "directMessages" | "groupDirect" | "auditLog" | "events" | "automod" | "bookmarks" | "poll" | "thread" | "guide" | "reports" | "activity" | "command" | null
+    "channel" | "category" | "channelSettings" | "channelNotifications" | "channelCanvas" | "scheduledMessages" | "roles" | "server" | "serverSettings" | "friends" | "account" | "profile" | "memberProfile" | "notifications" | "aura" | "preferences" | "directMessages" | "groupDirect" | "auditLog" | "events" | "automod" | "bookmarks" | "poll" | "thread" | "guide" | "reports" | "activity" | "command" | null
   >(null);
   const [commandQuery, setCommandQuery] = useState("");
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
@@ -1442,6 +1468,17 @@ export function KuzensApp() {
   const [autoModSaving, setAutoModSaving] = useState(false);
   const [savedMessages, setSavedMessages] = useState<SavedMessage[]>([]);
   const [bookmarksLoading, setBookmarksLoading] = useState(false);
+  const [channelCanvas, setChannelCanvas] = useState<ChannelCanvas | null>(null);
+  const [canvasCanEdit, setCanvasCanEdit] = useState(false);
+  const [canvasLoading, setCanvasLoading] = useState(false);
+  const [canvasSaving, setCanvasSaving] = useState(false);
+  const [scheduledItems, setScheduledItems] = useState<ScheduledMessage[]>([]);
+  const [scheduledLoading, setScheduledLoading] = useState(false);
+  const [scheduleContent, setScheduleContent] = useState("");
+  const [scheduleAt, setScheduleAt] = useState(() =>
+    dateTimeInputValue(new Date(Date.now() + 30 * 60_000)),
+  );
+  const [scheduleSaving, setScheduleSaving] = useState(false);
   const [memberVolumes, setMemberVolumes] = useState<Record<string, number>>({});
   const [revealedBlockedMessages, setRevealedBlockedMessages] = useState<Set<string>>(
     () => new Set(),
@@ -1901,7 +1938,7 @@ export function KuzensApp() {
     void syncMessages(true);
     const timer = window.setInterval(() => {
       if (document.visibilityState === "visible") void syncMessages(false);
-    }, 750);
+    }, preferences.lowPowerMode ? 2_500 : 750);
     const catchUp = () => {
       if (document.visibilityState === "visible") void syncMessages(false);
     };
@@ -1913,7 +1950,7 @@ export function KuzensApp() {
       document.removeEventListener("visibilitychange", catchUp);
       window.removeEventListener("online", catchUp);
     };
-  }, [activeChannel, activeServerId, selected?.kind, profile, syncGeneration]);
+  }, [activeChannel, activeServerId, preferences.lowPowerMode, selected?.kind, profile, syncGeneration]);
 
   useEffect(() => {
     if (!profile || !activeServerId) return;
@@ -1955,10 +1992,10 @@ export function KuzensApp() {
       }).catch(() => undefined);
     }
     void sendPresence().then(loadMembers);
-    const presenceTimer = window.setInterval(() => void sendPresence(), 25_000);
+    const presenceTimer = window.setInterval(() => void sendPresence(), preferences.lowPowerMode ? 45_000 : 25_000);
     const membersTimer = window.setInterval(() => {
       if (voiceConnected || document.visibilityState === "visible") void loadMembers();
-    }, voiceConnected ? 2_000 : 8_000);
+    }, voiceConnected ? 2_000 : preferences.lowPowerMode ? 30_000 : 8_000);
     const catchUp = () => {
       if (document.visibilityState === "visible") void loadMembers();
     };
@@ -1969,7 +2006,7 @@ export function KuzensApp() {
       window.clearInterval(membersTimer);
       document.removeEventListener("visibilitychange", catchUp);
     };
-  }, [activeServerId, connectedVoiceChannelId, profile, sharing, voiceConnected]);
+  }, [activeServerId, connectedVoiceChannelId, preferences.lowPowerMode, profile, sharing, voiceConnected]);
 
   useEffect(() => {
     if (!profile || !activeServerId) return;
@@ -2022,12 +2059,12 @@ export function KuzensApp() {
     void syncChannelStates();
     const timer = window.setInterval(() => {
       if (document.visibilityState === "visible") void syncChannelStates();
-    }, 8_000);
+    }, preferences.lowPowerMode ? 30_000 : 8_000);
     return () => {
       stopped = true;
       window.clearInterval(timer);
     };
-  }, [activeServerId, profile]);
+  }, [activeServerId, preferences.lowPowerMode, profile]);
 
   useEffect(() => {
     stickToLatest.current = true;
@@ -2119,12 +2156,12 @@ export function KuzensApp() {
     void sync(true);
     const timer = window.setInterval(() => {
       if (document.visibilityState === "visible") void sync(false);
-    }, 750);
+    }, preferences.lowPowerMode ? 2_500 : 750);
     return () => {
       stopped = true;
       window.clearInterval(timer);
     };
-  }, [activeDirectConversationId, modal]);
+  }, [activeDirectConversationId, modal, preferences.lowPowerMode]);
 
   useEffect(() => {
     if (sharing && previewVideo.current && displayStream.current) {
@@ -2218,9 +2255,9 @@ export function KuzensApp() {
     void loadNotifications();
     const timer = window.setInterval(() => {
       if (document.visibilityState === "visible") void loadNotifications();
-    }, 15_000);
+    }, preferences.lowPowerMode ? 60_000 : 15_000);
     return () => window.clearInterval(timer);
-  }, [profile]);
+  }, [preferences.lowPowerMode, profile]);
 
   useEffect(() => {
     if (!profile) return;
@@ -2253,12 +2290,12 @@ export function KuzensApp() {
     void syncDirectSummary();
     const timer = window.setInterval(() => {
       if (document.visibilityState === "visible") void syncDirectSummary();
-    }, 10_000);
+    }, preferences.lowPowerMode ? 45_000 : 10_000);
     return () => {
       stopped = true;
       window.clearInterval(timer);
     };
-  }, [profile]);
+  }, [preferences.lowPowerMode, profile]);
 
   useEffect(() => {
     if (profile && activeServerId) void loadAura();
@@ -2271,9 +2308,18 @@ export function KuzensApp() {
     void loadBookmarks();
     const timer = window.setInterval(() => {
       if (document.visibilityState === "visible") void loadBookmarks();
-    }, 60_000);
+    }, preferences.lowPowerMode ? 180_000 : 60_000);
     return () => window.clearInterval(timer);
-  }, [profile]);
+  }, [preferences.lowPowerMode, profile]);
+
+  useEffect(() => {
+    if (!profile) return;
+    void loadScheduledMessages();
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") void loadScheduledMessages();
+    }, preferences.lowPowerMode ? 180_000 : 60_000);
+    return () => window.clearInterval(timer);
+  }, [preferences.lowPowerMode, profile]);
 
   useEffect(() => {
     function closeMenu() {
@@ -2332,6 +2378,7 @@ export function KuzensApp() {
           highContrast: Boolean(saved.highContrast),
           reducedMotion: Boolean(saved.reducedMotion),
           focusMode: Boolean(saved.focusMode),
+          lowPowerMode: Boolean(saved.lowPowerMode),
           pushToTalk: Boolean(saved.pushToTalk),
           inputDeviceId: typeof saved.inputDeviceId === "string" ? saved.inputDeviceId : "",
           echoCancellation: saved.echoCancellation !== false,
@@ -4179,6 +4226,137 @@ export function KuzensApp() {
   function openBookmarks() {
     setModal("bookmarks");
     void loadBookmarks();
+  }
+
+  async function openChannelCanvas(targetChannel: Channel | undefined = selected) {
+    if (!targetChannel || !activeServerId) return;
+    setModal("channelCanvas");
+    setCanvasLoading(true);
+    setChannelCanvas(null);
+    try {
+      const query = new URLSearchParams({ server: activeServerId, channel: targetChannel.id });
+      const response = await apiFetch(`/api/channel-canvas?${query.toString()}`);
+      if (!response.ok) throw new Error(await responseError(response, "Kanal Panosu yüklenemedi."));
+      const data = (await response.json()) as { canvas?: ChannelCanvas; canEdit?: boolean };
+      setChannelCanvas(data.canvas || null);
+      setCanvasCanEdit(Boolean(data.canEdit));
+    } catch (error) {
+      setToast({
+        text: error instanceof Error ? error.message : "Kanal Panosu yüklenemedi.",
+        tone: "danger",
+      });
+      setModal(null);
+    } finally {
+      setCanvasLoading(false);
+    }
+  }
+
+  async function saveChannelCanvas(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!channelCanvas) return;
+    setCanvasSaving(true);
+    try {
+      const response = await apiFetch("/api/channel-canvas", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          serverId: activeServerId,
+          channelId: channelCanvas.channelId,
+          title: channelCanvas.title,
+          content: channelCanvas.content,
+        }),
+      });
+      if (!response.ok) throw new Error(await responseError(response, "Kanal Panosu kaydedilemedi."));
+      const data = (await response.json()) as { canvas?: ChannelCanvas; canEdit?: boolean };
+      if (data.canvas) setChannelCanvas(data.canvas);
+      setCanvasCanEdit(Boolean(data.canEdit));
+      setToast({ text: "Kanal Panosu herkes için güncellendi.", tone: "success" });
+    } catch (error) {
+      setToast({
+        text: error instanceof Error ? error.message : "Kanal Panosu kaydedilemedi.",
+        tone: "danger",
+      });
+    } finally {
+      setCanvasSaving(false);
+    }
+  }
+
+  async function loadScheduledMessages() {
+    setScheduledLoading(true);
+    try {
+      const response = await apiFetch("/api/scheduled-messages");
+      if (!response.ok) throw new Error(await responseError(response, "Planlanan mesajlar yüklenemedi."));
+      const data = (await response.json()) as { scheduledMessages?: ScheduledMessage[] };
+      setScheduledItems(
+        (data.scheduledMessages || []).filter((item) => item.status === "pending" || item.status === "failed"),
+      );
+    } catch (error) {
+      setToast({
+        text: error instanceof Error ? error.message : "Planlanan mesajlar yüklenemedi.",
+        tone: "danger",
+      });
+    } finally {
+      setScheduledLoading(false);
+    }
+  }
+
+  function openScheduledMessages(useCurrentDraft = false) {
+    if (useCurrentDraft) setScheduleContent(draft.trim());
+    setScheduleAt(dateTimeInputValue(new Date(Date.now() + 30 * 60_000)));
+    setModal("scheduledMessages");
+    void loadScheduledMessages();
+  }
+
+  async function createScheduledMessage(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selected || !scheduleContent.trim()) return;
+    setScheduleSaving(true);
+    try {
+      const response = await apiFetch("/api/scheduled-messages", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          serverId: activeServerId,
+          channelId: selected.id,
+          content: scheduleContent,
+          replyToId: replyingTo?.id || null,
+          sendAt: new Date(scheduleAt).toISOString(),
+        }),
+      });
+      if (!response.ok) throw new Error(await responseError(response, "Mesaj planlanamadı."));
+      if (scheduleContent.trim() === draft.trim()) setDraft("");
+      setScheduleContent("");
+      setReplyingTo(null);
+      await loadScheduledMessages();
+      setToast({ text: "Mesaj güvenli biçimde planlandı.", tone: "success" });
+    } catch (error) {
+      setToast({
+        text: error instanceof Error ? error.message : "Mesaj planlanamadı.",
+        tone: "danger",
+      });
+    } finally {
+      setScheduleSaving(false);
+    }
+  }
+
+  async function scheduledMessageAction(item: ScheduledMessage, action: "send_now" | "delete") {
+    const response = await apiFetch("/api/scheduled-messages", {
+      method: action === "delete" ? "DELETE" : "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id: item.id, action: action === "send_now" ? "send_now" : undefined }),
+    });
+    if (!response.ok) {
+      setToast({ text: await responseError(response, "Planlanan mesaj güncellenemedi."), tone: "danger" });
+      return;
+    }
+    await loadScheduledMessages();
+    if (action === "send_now" && item.channelId === activeChannel) {
+      setSyncGeneration((current) => current + 1);
+    }
+    setToast({
+      text: action === "send_now" ? "Mesaj şimdi gönderildi." : "Planlanan mesaj iptal edildi.",
+      tone: "success",
+    });
   }
 
   async function saveBookmark(message: ChatMessage) {
@@ -6145,6 +6323,9 @@ export function KuzensApp() {
     { id: "direct", icon: "✦", label: "Özel mesajları aç", hint: `${directUnreadCount} okunmamış konuşma`, keywords: "dm özel mesaj", run: openDirectMessages },
     { id: "focus", icon: "⌁", label: preferences.focusMode ? "Odak modunu kapat" : "Odak modunu aç", hint: "Dikkat dağıtan panelleri tek dokunuşla gizle", keywords: "odak focus sade", run: toggleFocusMode },
     { id: "bookmarks", icon: "☆", label: "Sonra Bak listesini aç", hint: `${bookmarkReminderCount} zamanı gelen hatırlatma`, keywords: "kaydet hatırlatma yer imi", run: openBookmarks },
+    { id: "canvas", icon: "▤", label: "Kanal Panosunu aç", hint: selected?.name ? `#${selected.name} notları ve bağlantıları` : "Kanal bilgileri", keywords: "pano canvas not karar bağlantı", run: () => void openChannelCanvas() },
+    { id: "scheduled", icon: "◷", label: "Planlanan mesajları aç", hint: `${scheduledItems.filter((item) => item.status === "pending").length} yaklaşan mesaj`, keywords: "sonra gönder planla zamanla", run: () => openScheduledMessages(false) },
+    { id: "low-power", icon: "◌", label: preferences.lowPowerMode ? "Tasarruf modunu kapat" : "Tasarruf modunu aç", hint: "Efekt ve arka plan yükünü azalt", keywords: "performans düşük güç tasarruf hız", run: () => setPreferences((current) => ({ ...current, lowPowerMode: !current.lowPowerMode })) },
     { id: "events", icon: "◫", label: "Etkinlik merkezini aç", hint: "Takvim, katılım ve hatırlatmalar", keywords: "etkinlik takvim", run: openEvents },
     { id: "preferences", icon: "⚙", label: "Görünüm ve ses ayarları", hint: "Mikrofon, tema, yoğunluk ve erişilebilirlik", keywords: "ayar ses mikrofon tema", run: () => void openPreferences() },
     { id: "aura", icon: "✧", label: profile?.isOwner ? "Aura yönetimini aç" : "Kuzens Aura'yı aç", hint: profile?.isOwner ? "Üyelik, kod ve topluluk Aura yönetimi" : "Aura ayrıcalıkları ve kod etkinleştirme", keywords: "aura premium yönetim", run: openAura },
@@ -6181,7 +6362,7 @@ export function KuzensApp() {
 
   return (
     <main
-      className={`app-shell app-shell-v3 font-${preferences.fontSize} density-${preferences.density} ${preferences.highContrast ? "high-contrast" : ""} ${preferences.reducedMotion ? "reduce-motion" : ""} ${preferences.focusMode && activeServerId ? "focus-mode" : ""}`}
+      className={`app-shell app-shell-v3 font-${preferences.fontSize} density-${preferences.density} ${preferences.highContrast ? "high-contrast" : ""} ${preferences.reducedMotion ? "reduce-motion" : ""} ${preferences.lowPowerMode ? "low-power" : ""} ${preferences.focusMode && activeServerId ? "focus-mode" : ""}`}
     >
       {splashVisible && (
         <div className="kuzens-splash" role="status" aria-live="polite">
@@ -6580,6 +6761,27 @@ export function KuzensApp() {
               ⌖
             </button>
           )}
+          {selected && selected.kind !== "voice" && (
+            <button
+              className="notification-button canvas-button"
+              onClick={() => void openChannelCanvas()}
+              aria-label="Kanal Panosu"
+              title="Kanal Panosu · notlar, bağlantılar ve kararlar"
+            >
+              ▤
+            </button>
+          )}
+          <button
+            className="notification-button scheduled-button"
+            onClick={() => openScheduledMessages(false)}
+            aria-label="Planlanan mesajlar"
+            title="Planlanan mesajlar"
+          >
+            ◷
+            {scheduledItems.filter((item) => item.status === "pending").length > 0 && (
+              <b>{Math.min(99, scheduledItems.filter((item) => item.status === "pending").length)}</b>
+            )}
+          </button>
           <button
             className="notification-button"
             onClick={openBookmarks}
@@ -7044,6 +7246,16 @@ export function KuzensApp() {
                   aria-label="Mesaj"
                 />
                 <button type="button" className="composer-tool" aria-label="Anket" title="Anket oluştur" onClick={() => setModal("poll")}>▥</button>
+                <button
+                  type="button"
+                  className="composer-tool schedule-tool"
+                  aria-label="Sonra gönder"
+                  title="Sonra gönder"
+                  disabled={!draft.trim()}
+                  onClick={() => openScheduledMessages(true)}
+                >
+                  ◷
+                </button>
                 <button type="button" className="composer-tool" aria-label="GIF" onClick={() => {
                   const gifUrl = window.prompt("Paylaşmak istediğin güvenli GIF bağlantısını yapıştır:");
                   if (gifUrl && /^https:\/\/[^\s]+$/i.test(gifUrl)) setDraft((current) => `${current}${current ? " " : ""}${gifUrl}`);
@@ -8657,6 +8869,17 @@ export function KuzensApp() {
                   />
                   <i />
                 </label>
+                <label>
+                  <span><strong>Tasarruf modu</strong><small>Arka plan yenilemelerini, efektleri ve cihaz yükünü azaltır; sesli görüşme hızı korunur.</small></span>
+                  <input
+                    type="checkbox"
+                    checked={preferences.lowPowerMode}
+                    onChange={(event) =>
+                      setPreferences((current) => ({ ...current, lowPowerMode: event.target.checked }))
+                    }
+                  />
+                  <i />
+                </label>
               </div>
             </section>
 
@@ -9967,6 +10190,136 @@ export function KuzensApp() {
         </div>
       )}
 
+      {modal === "channelCanvas" && (
+        <div className="modal-backdrop" onMouseDown={() => setModal(null)}>
+          <form
+            className="modal-card channel-canvas-modal"
+            onSubmit={saveChannelCanvas}
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <button type="button" className="modal-close" onClick={() => setModal(null)} aria-label="Kapat">×</button>
+            <header className="canvas-hero">
+              <span>▤</span>
+              <div>
+                <small>KANAL PANOSU</small>
+                <h2>{channelCanvas?.title || "Pano hazırlanıyor"}</h2>
+                <p>Önemli bağlantılar, kararlar ve kanal notları konuşmanın üstünde kalır.</p>
+              </div>
+            </header>
+            {canvasLoading || !channelCanvas ? (
+              <div className="canvas-loading"><i /><span>Pano güvenli biçimde yükleniyor…</span></div>
+            ) : (
+              <>
+                <label className="canvas-title-field">
+                  <span>Başlık</span>
+                  <input
+                    value={channelCanvas.title}
+                    readOnly={!canvasCanEdit}
+                    maxLength={80}
+                    onChange={(event) => setChannelCanvas((current) => current ? { ...current, title: event.target.value } : current)}
+                  />
+                </label>
+                <label className="canvas-content-field">
+                  <span>Pano içeriği <small>{channelCanvas.content.length.toLocaleString("tr-TR")} / 12.000</small></span>
+                  <textarea
+                    value={channelCanvas.content}
+                    readOnly={!canvasCanEdit}
+                    maxLength={12_000}
+                    placeholder={canvasCanEdit ? "Kanal amacı, yararlı bağlantılar, alınan kararlar veya yapılacaklar…" : "Bu kanalın panosu henüz boş."}
+                    onChange={(event) => setChannelCanvas((current) => current ? { ...current, content: event.target.value } : current)}
+                  />
+                </label>
+                <footer className="canvas-footer">
+                  <span>
+                    {channelCanvas.updatedAt
+                      ? `${channelCanvas.updatedByName || "Bir yönetici"} · ${new Date(channelCanvas.updatedAt).toLocaleString("tr-TR")}`
+                      : "Henüz kaydedilmiş bir pano yok"}
+                  </span>
+                  <div>
+                    <button type="button" onClick={() => setModal(null)}>Kapat</button>
+                    {canvasCanEdit && <button className="primary-button" disabled={canvasSaving}>{canvasSaving ? "Kaydediliyor…" : "Panoyu yayınla"}</button>}
+                  </div>
+                </footer>
+              </>
+            )}
+          </form>
+        </div>
+      )}
+
+      {modal === "scheduledMessages" && (
+        <div className="modal-backdrop" onMouseDown={() => setModal(null)}>
+          <section className="modal-card scheduled-modal" onMouseDown={(event) => event.stopPropagation()}>
+            <button type="button" className="modal-close" onClick={() => setModal(null)} aria-label="Kapat">×</button>
+            <header className="scheduled-hero">
+              <div><span>◷</span></div>
+              <section>
+                <small>SONRA GÖNDER</small>
+                <h2>Doğru mesaj, doğru zamanda.</h2>
+                <p>Mesajını şimdi hazırla; Kuzens seçtiğin zamanda yetkilerini yeniden denetleyip yayınlasın.</p>
+              </section>
+            </header>
+            <div className="scheduled-layout">
+              <form className="scheduled-composer" onSubmit={createScheduledMessage}>
+                <div className="scheduled-target">
+                  <span>#</span><strong>{selected?.name || "oda"}</strong><small>{activeServer.name}</small>
+                </div>
+                <label>
+                  <span>Mesaj</span>
+                  <textarea
+                    value={scheduleContent}
+                    maxLength={2_000}
+                    onChange={(event) => setScheduleContent(event.target.value)}
+                    placeholder="Daha sonra gönderilecek mesajını yaz…"
+                  />
+                  <small>{scheduleContent.length} / 2.000</small>
+                </label>
+                <label>
+                  <span>Gönderim zamanı</span>
+                  <input
+                    type="datetime-local"
+                    value={scheduleAt}
+                    min={dateTimeInputValue(new Date(Date.now() + 60_000))}
+                    onChange={(event) => setScheduleAt(event.target.value)}
+                  />
+                </label>
+                {replyingTo && <div className="scheduled-reply">↩ {replyingTo.authorName} kullanıcısına yanıt olarak gönderilecek.</div>}
+                <button className="primary-button" disabled={scheduleSaving || !scheduleContent.trim()}>
+                  {scheduleSaving ? "Planlanıyor…" : "Mesajı planla"}
+                </button>
+              </form>
+              <section className="scheduled-queue">
+                <header><div><strong>Yaklaşanlar</strong><small>Hesabına bağlı, tüm cihazlarında görünür</small></div><button type="button" onClick={() => void loadScheduledMessages()}>↻</button></header>
+                {scheduledLoading ? (
+                  <div className="scheduled-empty"><i /><span>Planlar yükleniyor…</span></div>
+                ) : scheduledItems.length === 0 ? (
+                  <div className="scheduled-empty"><span>◷</span><strong>Henüz plan yok</strong><small>İlk mesajını soldaki alandan planlayabilirsin.</small></div>
+                ) : (
+                  <div className="scheduled-list">
+                    {scheduledItems.map((item) => (
+                      <article className={item.status === "failed" ? "failed" : ""} key={item.id}>
+                        <header>
+                          <span># {item.channelName}</span>
+                          <time>{new Date(item.sendAt).toLocaleString("tr-TR", { dateStyle: "medium", timeStyle: "short" })}</time>
+                        </header>
+                        <p>{item.content}</p>
+                        {item.failureReason && <small className="scheduled-error">{item.failureReason}</small>}
+                        <footer>
+                          <small>{item.serverName || "Kuzens"}</small>
+                          <div>
+                            {item.status === "pending" && <button type="button" onClick={() => void scheduledMessageAction(item, "send_now")}>Şimdi gönder</button>}
+                            <button type="button" className="danger" onClick={() => void scheduledMessageAction(item, "delete")}>İptal et</button>
+                          </div>
+                        </footer>
+                      </article>
+                    ))}
+                  </div>
+                )}
+              </section>
+            </div>
+          </section>
+        </div>
+      )}
+
       {modal === "bookmarks" && (
         <div className="modal-backdrop" onMouseDown={() => setModal(null)}>
           <section
@@ -10265,6 +10618,9 @@ export function KuzensApp() {
             <>
               <span className="context-title">#{contextMenu.channel.name}</span>
               <button onClick={() => toggleFavoriteChannel(contextMenu.channel!)}><span>★</span>{favoriteChannelIds.has(contextMenu.channel.id) ? "Favorilerden çıkar" : "Favorilere ekle"}</button>
+              {contextMenu.channel.kind !== "voice" && (
+                <button onClick={() => { setContextMenu(null); void openChannelCanvas(contextMenu.channel!); }}><span>▤</span>Kanal Panosu</button>
+              )}
               {contextMenu.channel.kind !== "voice" && (
                 <>
                   <button onClick={() => { void markChannelRead(contextMenu.channel!); setToast({ text: "Kanal okundu işaretlendi.", tone: "success" }); }}><span>✓</span>Okundu işaretle</button>

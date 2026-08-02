@@ -162,6 +162,13 @@
       "when": 1785615502496,
       "tag": "0022_reset_native_default_memberships",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "6",
+      "when": 1785686868111,
+      "tag": "0023_freezing_nightshade",
+      "breakpoints": true
     }
   ]
 }
