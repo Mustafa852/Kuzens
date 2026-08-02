@@ -314,6 +314,8 @@ test("supports multi-role members and role-scoped channel access", () => {
 
 test("provides protected account deletion and the requested owner identity", () => {
   assert.match(communitySource, /ibrahimilhan159@gmail\.com/);
+  assert.match(communitySource, /profile && isPrimaryOwnerEmail\(identity\.email\) && !profile\.isOwner/);
+  assert.match(communitySource, /set\(\{ isOwner: true \}\)/);
   assert.match(profileRoute, /isPrimaryOwnerEmail\(identity\.email\)/);
   assert.match(accountRoute, /confirmation !== "HESABIMI SİL"/);
   assert.match(accountRoute, /Önce sahibi olduğun toplulukları silmelisin/);
@@ -328,6 +330,22 @@ test("separates personal Aura from Aura community upgrades", () => {
   assert.match(auraRoute, /action === "revoke-server"/);
   assert.match(appSource, /AURA TOPLULUK/);
   assert.match(appSource, /Aura Topluluk \$\{serverAuraMembership\.tier\}/);
+  assert.match(auraRoute, /targetByEmail/);
+  assert.match(appSource, /kullanıcı adı veya e-posta/);
+});
+
+test("adds a unified activity center, command search, and focus mode", () => {
+  assert.match(appSource, /modal === "activity"/);
+  assert.match(appSource, /KUZENS AKIŞ/);
+  assert.match(appSource, /openActivityCenter/);
+  assert.match(appSource, /markAllNotificationsRead/);
+  assert.match(appSource, /modal === "command"/);
+  assert.match(appSource, /commandResults/);
+  assert.match(appSource, /CTRL \/ ⌘ \+ SHIFT \+ K/);
+  assert.match(appSource, /preferences\.focusMode/);
+  assert.match(appStyles, /\.app-shell-v3\.focus-mode/);
+  assert.match(appStyles, /\.activity-modal/);
+  assert.match(appStyles, /\.command-modal/);
 });
 
 test("uses the readable Kuzens V2 visual system", () => {

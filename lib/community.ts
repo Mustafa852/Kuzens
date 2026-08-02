@@ -46,11 +46,18 @@ export function defaultRoles(serverId = DEFAULT_SERVER_ID) {
 
 export async function findProfile(identity: RequestIdentity) {
   const db = getDb();
-  const [profile] = await db
+  let [profile] = await db
     .select()
     .from(profiles)
     .where(eq(profiles.email, identity.email))
     .limit(1);
+  if (profile && isPrimaryOwnerEmail(identity.email) && !profile.isOwner) {
+    await db
+      .update(profiles)
+      .set({ isOwner: true })
+      .where(eq(profiles.id, profile.id));
+    profile = { ...profile, isOwner: true };
+  }
   return profile;
 }
 

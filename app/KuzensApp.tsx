@@ -310,6 +310,7 @@ type AppPreferences = {
   density: "comfortable" | "compact";
   highContrast: boolean;
   reducedMotion: boolean;
+  focusMode: boolean;
   pushToTalk: boolean;
   inputDeviceId: string;
   echoCancellation: boolean;
@@ -449,6 +450,7 @@ const defaultPreferences: AppPreferences = {
   density: "comfortable",
   highContrast: false,
   reducedMotion: false,
+  focusMode: false,
   pushToTalk: false,
   inputDeviceId: "",
   echoCancellation: true,
@@ -1241,8 +1243,9 @@ export function KuzensApp() {
   const [toast, setToast] = useState<Toast | null>(null);
   const [copyFallback, setCopyFallback] = useState<CopyFallback | null>(null);
   const [modal, setModal] = useState<
-    "channel" | "category" | "channelSettings" | "channelNotifications" | "roles" | "server" | "serverSettings" | "friends" | "account" | "profile" | "memberProfile" | "notifications" | "aura" | "preferences" | "directMessages" | "groupDirect" | "auditLog" | "events" | "automod" | "bookmarks" | "poll" | "thread" | "guide" | "reports" | null
+    "channel" | "category" | "channelSettings" | "channelNotifications" | "roles" | "server" | "serverSettings" | "friends" | "account" | "profile" | "memberProfile" | "notifications" | "aura" | "preferences" | "directMessages" | "groupDirect" | "auditLog" | "events" | "automod" | "bookmarks" | "poll" | "thread" | "guide" | "reports" | "activity" | "command" | null
   >(null);
+  const [commandQuery, setCommandQuery] = useState("");
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [newServerName, setNewServerName] = useState("");
   const [joinInviteCode, setJoinInviteCode] = useState("");
@@ -2237,6 +2240,7 @@ export function KuzensApp() {
           density: saved.density === "compact" ? "compact" : "comfortable",
           highContrast: Boolean(saved.highContrast),
           reducedMotion: Boolean(saved.reducedMotion),
+          focusMode: Boolean(saved.focusMode),
           pushToTalk: Boolean(saved.pushToTalk),
           inputDeviceId: typeof saved.inputDeviceId === "string" ? saved.inputDeviceId : "",
           echoCancellation: saved.echoCancellation !== false,
@@ -2442,9 +2446,34 @@ export function KuzensApp() {
         setMobileChannels(false);
         return;
       }
-      if ((event.ctrlKey || event.metaKey) && event.key.toLocaleLowerCase("en-US") === "k") {
+      if (
+        (event.ctrlKey || event.metaKey) &&
+        event.shiftKey &&
+        event.key.toLocaleLowerCase("en-US") === "k"
+      ) {
+        event.preventDefault();
+        setCommandQuery("");
+        setModal("command");
+        return;
+      }
+      if (
+        (event.ctrlKey || event.metaKey) &&
+        !event.shiftKey &&
+        event.key.toLocaleLowerCase("en-US") === "k"
+      ) {
         event.preventDefault();
         searchInput.current?.focus();
+        return;
+      }
+      if (
+        (event.ctrlKey || event.metaKey) &&
+        event.shiftKey &&
+        event.key.toLocaleLowerCase("en-US") === "f"
+      ) {
+        event.preventDefault();
+        const focusMode = !preferences.focusMode;
+        setPreferences((current) => ({ ...current, focusMode }));
+        setToast({ text: focusMode ? "Odak modu açıldı." : "Odak modu kapatıldı.", tone: "success" });
         return;
       }
       if (
@@ -2522,7 +2551,7 @@ export function KuzensApp() {
       window.removeEventListener("keydown", keyboardShortcut);
       window.removeEventListener("keyup", keyboardShortcut);
     };
-  }, [activeChannel, canSpeakInConnectedVoice, channels, preferences.pushToTalk, voiceConnected]);
+  }, [activeChannel, canSpeakInConnectedVoice, channels, preferences.focusMode, preferences.pushToTalk, voiceConnected]);
 
   useEffect(() => {
     const connections = peerConnections.current;
@@ -4254,6 +4283,44 @@ export function KuzensApp() {
     });
   }
 
+  function openActivityCenter() {
+    setContextMenu(null);
+    setModal("activity");
+    void loadNotifications();
+    void loadFriends();
+    void loadBookmarks();
+    if (activeServerId) void loadEvents();
+  }
+
+  function openCommandCenter() {
+    setContextMenu(null);
+    setCommandQuery("");
+    setModal("command");
+  }
+
+  function toggleFocusMode() {
+    const focusMode = !preferences.focusMode;
+    setPreferences((current) => ({ ...current, focusMode }));
+    setToast({
+      text: focusMode ? "Odak modu açıldı; yalnızca konuşma alanı gösteriliyor." : "Odak modu kapatıldı.",
+      tone: "success",
+    });
+  }
+
+  async function markAllNotificationsRead() {
+    const response = await apiFetch("/api/notifications", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ all: true }),
+    });
+    if (!response.ok) {
+      setToast({ text: await responseError(response, "Bildirimler temizlenemedi."), tone: "danger" });
+      return;
+    }
+    setNotifications([]);
+    setToast({ text: "Tüm bahsetmeler okundu olarak işaretlendi.", tone: "success" });
+  }
+
   async function installKuzens() {
     if (installedApp) {
       setToast({ text: "Kuzens zaten uygulama olarak çalışıyor.", tone: "success" });
@@ -5536,13 +5603,16 @@ export function KuzensApp() {
 
   async function grantAura(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const targetLabel = auraGrantUsername.includes("@")
+      ? auraGrantUsername
+      : `@${auraGrantUsername.replace(/^@/, "")}`;
     const ok = await auraAction(
       {
         action: "grant",
         username: auraGrantUsername,
         durationDays: auraDuration === 0 ? null : auraDuration,
       },
-      `@${auraGrantUsername.replace(/^@/, "")} için Aura tanımlandı.`,
+      `${targetLabel} için Aura tanımlandı.`,
     );
     if (ok) setAuraGrantUsername("");
   }
@@ -5896,9 +5966,60 @@ export function KuzensApp() {
     );
   }
 
+  const upcomingActivityEvents = communityEvents
+    .filter((item) => !item.cancelledAt && new Date(item.startsAt).getTime() > Date.now())
+    .sort((left, right) => new Date(left.startsAt).getTime() - new Date(right.startsAt).getTime())
+    .slice(0, 4);
+  const activeVoiceRooms = voiceChannels
+    .map((channel) => ({
+      channel,
+      members: members.filter((member) => member.voiceChannelId === channel.id),
+    }))
+    .filter((item) => item.members.length > 0);
+  const dueBookmarks = savedMessages.filter((item) => item.reminderDue).slice(0, 4);
+  const commandItems = [
+    { id: "activity", icon: "◉", label: "Akış merkezini aç", hint: "Bahsetmeler, mesajlar, etkinlikler ve hatırlatmalar", keywords: "akış aktivite gelen kutusu", run: openActivityCenter },
+    { id: "friends", icon: "♧", label: "Arkadaşlara git", hint: "Çevrimiçi, bekleyen ve engellenen kişiler", keywords: "arkadaş sosyal istek", run: openFriends },
+    { id: "direct", icon: "✦", label: "Özel mesajları aç", hint: `${directUnreadCount} okunmamış konuşma`, keywords: "dm özel mesaj", run: openDirectMessages },
+    { id: "focus", icon: "⌁", label: preferences.focusMode ? "Odak modunu kapat" : "Odak modunu aç", hint: "Dikkat dağıtan panelleri tek dokunuşla gizle", keywords: "odak focus sade", run: toggleFocusMode },
+    { id: "bookmarks", icon: "☆", label: "Sonra Bak listesini aç", hint: `${bookmarkReminderCount} zamanı gelen hatırlatma`, keywords: "kaydet hatırlatma yer imi", run: openBookmarks },
+    { id: "events", icon: "◫", label: "Etkinlik merkezini aç", hint: "Takvim, katılım ve hatırlatmalar", keywords: "etkinlik takvim", run: openEvents },
+    { id: "preferences", icon: "⚙", label: "Görünüm ve ses ayarları", hint: "Mikrofon, tema, yoğunluk ve erişilebilirlik", keywords: "ayar ses mikrofon tema", run: () => void openPreferences() },
+    { id: "aura", icon: "✧", label: profile?.isOwner ? "Aura yönetimini aç" : "Kuzens Aura'yı aç", hint: profile?.isOwner ? "Üyelik, kod ve topluluk Aura yönetimi" : "Aura ayrıcalıkları ve kod etkinleştirme", keywords: "aura premium yönetim", run: openAura },
+    ...(canManageServer ? [{ id: "server-settings", icon: "◇", label: "Topluluk ayarları", hint: activeServer.name, keywords: "sunucu topluluk ayar", run: openServerSettings }] : []),
+    ...(canManageChannels ? [{ id: "new-channel", icon: "+", label: "Yeni oda oluştur", hint: "Metin, ses, forum veya duyuru", keywords: "kanal oda oluştur", run: () => setModal("channel" as const) }] : []),
+    { id: "new-poll", icon: "▥", label: "Anket oluştur", hint: selected?.name ? `#${selected.name}` : "Geçerli oda", keywords: "anket oylama", run: () => setModal("poll") },
+    ...channels.map((channel) => ({
+      id: `channel:${channel.id}`,
+      icon: channel.kind === "voice" ? "◖" : "#",
+      label: channel.name,
+      hint: `${channel.kind === "voice" ? "Ses odası" : channel.kind === "forum" ? "Forum" : "Metin odası"} · ${activeServer.name}`,
+      keywords: `kanal oda ${channel.name} ${channel.topic || ""}`,
+      run: () => chooseChannel(channel),
+    })),
+    ...members.slice(0, 80).map((member) => ({
+      id: `member:${member.id}`,
+      icon: member.online ? "●" : "○",
+      label: member.name,
+      hint: `${member.tag} · ${member.online ? "çevrimiçi" : "çevrimdışı"}`,
+      keywords: `üye kullanıcı ${member.name} ${member.tag}`,
+      run: () => openMemberProfile(member),
+    })),
+  ];
+  const normalizedCommandQuery = commandQuery.trim().toLocaleLowerCase("tr-TR");
+  const commandResults = commandItems
+    .filter((item) => !normalizedCommandQuery || `${item.label} ${item.hint} ${item.keywords}`.toLocaleLowerCase("tr-TR").includes(normalizedCommandQuery))
+    .slice(0, 14);
+
+  function executeCommand(run: () => void) {
+    setModal(null);
+    setCommandQuery("");
+    run();
+  }
+
   return (
     <main
-      className={`app-shell app-shell-v3 font-${preferences.fontSize} density-${preferences.density} ${preferences.highContrast ? "high-contrast" : ""} ${preferences.reducedMotion ? "reduce-motion" : ""}`}
+      className={`app-shell app-shell-v3 font-${preferences.fontSize} density-${preferences.density} ${preferences.highContrast ? "high-contrast" : ""} ${preferences.reducedMotion ? "reduce-motion" : ""} ${preferences.focusMode && activeServerId ? "focus-mode" : ""}`}
     >
       {splashVisible && (
         <div className="kuzens-splash" role="status" aria-live="polite">
@@ -6234,6 +6355,11 @@ export function KuzensApp() {
             </span>
           </div>
           <div className="header-spacer" />
+          <div className="nova-header-tools" aria-label="Kuzens hızlı araçları">
+            <button onClick={openCommandCenter} title="Hızlı geçiş · Ctrl Shift K"><span>⌕</span><b>Geçiş</b><kbd>⌃⇧K</kbd></button>
+            <button onClick={openActivityCenter} title="Akış merkezi"><span>◉</span><b>Akış</b>{notifications.length + directUnreadCount + pendingFriendCount + bookmarkReminderCount > 0 && <em>{Math.min(99, notifications.length + directUnreadCount + pendingFriendCount + bookmarkReminderCount)}</em>}</button>
+            <button className={preferences.focusMode ? "active" : ""} onClick={toggleFocusMode} title="Odak modu · Ctrl Shift F"><span>⌁</span><b>{preferences.focusMode ? "Odaktan çık" : "Odak"}</b></button>
+          </div>
           <div className="social-quick-actions" aria-label="Sosyal menü">
             <button onClick={openFriends} title="Arkadaşlar">
               <span>♧</span><b>Arkadaşlar</b>
@@ -8147,7 +8273,7 @@ export function KuzensApp() {
                       <input
                         value={auraGrantUsername}
                         onChange={(event) => setAuraGrantUsername(event.target.value.replace(/^@/, ""))}
-                        placeholder="kullanici_adi"
+                        placeholder="kullanıcı adı veya e-posta"
                       />
                     </label>
                     <label>
@@ -8166,6 +8292,7 @@ export function KuzensApp() {
                     </label>
                     <button disabled={auraBusy || auraGrantUsername.length < 3}>Aura ver</button>
                   </form>
+                  <small className="aura-owner-hint">Kullanıcı adı veya kayıtlı e-posta ile süreli ya da süresiz Aura tanımlayabilirsin.</small>
                   <section className="aura-server-owner">
                     <div>
                       <span>Topluluğa Aura ver</span>
@@ -8333,6 +8460,17 @@ export function KuzensApp() {
                   />
                   <i />
                 </label>
+                <label>
+                  <span><strong>Odak modu</strong><small>Sunucu, oda ve üye panellerini gizleyerek yalnızca konuşmayı gösterir.</small></span>
+                  <input
+                    type="checkbox"
+                    checked={preferences.focusMode}
+                    onChange={(event) =>
+                      setPreferences((current) => ({ ...current, focusMode: event.target.checked }))
+                    }
+                  />
+                  <i />
+                </label>
               </div>
             </section>
 
@@ -8340,6 +8478,8 @@ export function KuzensApp() {
               <div className="preference-heading"><span>KLAVYE KISAYOLLARI</span><small>Hızlı ve erişilebilir gezinme</small></div>
               <div className="shortcut-list">
                 <div><span>Mesajlarda ara</span><kbd>CTRL / ⌘ + K</kbd></div>
+                <div><span>Hızlı geçiş ve komutlar</span><kbd>CTRL / ⌘ + SHIFT + K</kbd></div>
+                <div><span>Odak modunu aç / kapat</span><kbd>CTRL / ⌘ + SHIFT + F</kbd></div>
                 <div><span>Önceki / sonraki metin odası</span><kbd>ALT + ↑ / ↓</kbd></div>
                 <div><span>Mikrofonu aç / kapat</span><kbd>CTRL / ⌘ + SHIFT + M</kbd></div>
                 <div><span>Pencere veya menüyü kapat</span><kbd>ESC</kbd></div>
@@ -9544,6 +9684,100 @@ export function KuzensApp() {
               </button>
             </div>
           </form>
+        </div>
+      )}
+
+      {modal === "command" && (
+        <div className="modal-backdrop command-backdrop" onMouseDown={() => setModal(null)}>
+          <section className="modal-card command-modal" role="dialog" aria-modal="true" aria-label="Kuzens hızlı geçiş" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="command-search">
+              <span>⌕</span>
+              <input
+                autoFocus
+                value={commandQuery}
+                onChange={(event) => setCommandQuery(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && commandResults[0]) executeCommand(commandResults[0].run);
+                }}
+                placeholder="Oda, kişi, ayar veya işlem ara…"
+                aria-label="Hızlı geçişte ara"
+              />
+              <kbd>ESC</kbd>
+            </div>
+            <div className="command-results">
+              <span>HIZLI GEÇİŞ · {commandResults.length} SONUÇ</span>
+              {commandResults.map((item, index) => (
+                <button key={item.id} type="button" onClick={() => executeCommand(item.run)}>
+                  <i>{item.icon}</i>
+                  <span><strong>{item.label}</strong><small>{item.hint}</small></span>
+                  {index === 0 && <kbd>ENTER</kbd>}
+                  <b>›</b>
+                </button>
+              ))}
+              {!commandResults.length && <div className="command-empty"><span>⌕</span><strong>Sonuç bulunamadı</strong><small>Başka bir oda, kişi veya işlem adı dene.</small></div>}
+            </div>
+            <footer><span><kbd>CTRL</kbd><kbd>SHIFT</kbd><kbd>K</kbd> her yerden aç</span><small>Kanallar, üyeler ve Kuzens özellikleri tek aramada.</small></footer>
+          </section>
+        </div>
+      )}
+
+      {modal === "activity" && (
+        <div className="modal-backdrop" onMouseDown={() => setModal(null)}>
+          <section className="modal-card activity-modal" onMouseDown={(event) => event.stopPropagation()}>
+            <button className="modal-close" onClick={() => setModal(null)} aria-label="Kapat">×</button>
+            <header className="activity-hero">
+              <div><span className="eyebrow">KUZENS AKIŞ</span><h2>Önemli olan ne varsa burada.</h2><p>Bahsetmelerini, konuşmalarını, etkinliklerini ve hatırlatmalarını tek ekrandan toparla.</p></div>
+              <button className={preferences.focusMode ? "active" : ""} onClick={toggleFocusMode}><span>⌁</span><strong>{preferences.focusMode ? "Odaktan çık" : "Odaklan"}</strong><small>Panelleri sadeleştir</small></button>
+            </header>
+            <div className="activity-stats">
+              <button onClick={() => { setModal("notifications"); void loadNotifications(); }}><span>{notifications.length}</span><small>Bahsetme</small></button>
+              <button onClick={openDirectMessages}><span>{directUnreadCount}</span><small>Mesaj</small></button>
+              <button onClick={openFriends}><span>{pendingFriendCount}</span><small>Arkadaş isteği</small></button>
+              <button onClick={openBookmarks}><span>{bookmarkReminderCount}</span><small>Hatırlatma</small></button>
+              <button onClick={openEvents}><span>{upcomingActivityEvents.length}</span><small>Yaklaşan etkinlik</small></button>
+            </div>
+            {profile?.isOwner && (
+              <button className="owner-command-card" onClick={openAura}>
+                <span>✧</span><div><small>KUZENS SAHİBİ</small><strong>Aura ve platform yönetimi sende</strong><p>Kullanıcı adı veya e-postayla Aura ver, kod üret ve topluluk seviyelerini yönet.</p></div><b>Yönetimi aç ›</b>
+              </button>
+            )}
+            <div className="activity-grid">
+              <section className="activity-card activity-inbox">
+                <header><div><span>◉</span><strong>Bahsetmeler</strong></div>{notifications.length > 0 && <button onClick={() => void markAllNotificationsRead()}>Tümünü okundu yap</button>}</header>
+                {notifications.slice(0, 4).map((notification) => (
+                  <button key={notification.id} onClick={() => void openNotification(notification)}>
+                    <i>{initials(notification.authorName)}</i><span><strong>{notification.authorName}</strong><small>{notification.serverName} · #{notification.channelName}</small><p>{notification.content}</p></span><time>{timeLabel(notification.createdAt)}</time>
+                  </button>
+                ))}
+                {!notifications.length && <div className="activity-empty"><span>✓</span><strong>Bahsetmeler temiz</strong><small>Yeni bir yanıt veya etiket burada görünecek.</small></div>}
+              </section>
+
+              <section className="activity-card">
+                <header><div><span>✦</span><strong>Sosyal</strong></div><button onClick={openFriends}>Arkadaşlar</button></header>
+                <button className="activity-action-row" onClick={openDirectMessages}><i>✦</i><span><strong>Özel mesajlar</strong><small>{directUnreadCount ? `${directUnreadCount} okunmamış mesaj` : "Konuşmaların güncel"}</small></span><b>›</b></button>
+                <button className="activity-action-row" onClick={openFriends}><i>♧</i><span><strong>Arkadaş istekleri</strong><small>{pendingFriendCount ? `${pendingFriendCount} kişi yanıtını bekliyor` : "Bekleyen istek yok"}</small></span><b>›</b></button>
+                <div className="activity-online"><span>{onlineMembers.slice(0, 5).map((member) => <i key={member.id} title={member.name}>{initials(member.name)}</i>)}</span><small>{onlineMembers.length} kuzen çevrimiçi</small></div>
+              </section>
+
+              <section className="activity-card">
+                <header><div><span>◫</span><strong>Sıradaki etkinlikler</strong></div><button onClick={openEvents}>Takvim</button></header>
+                {upcomingActivityEvents.map((item) => <button className="activity-event-row" key={item.id} onClick={openEvents}><time><b>{new Date(item.startsAt).toLocaleDateString("tr-TR", { day: "2-digit" })}</b><small>{new Date(item.startsAt).toLocaleDateString("tr-TR", { month: "short" })}</small></time><span><strong>{item.title}</strong><small>{eventDateLabel(item.startsAt)} · {item.location || activeServer.name}</small></span><b>›</b></button>)}
+                {!upcomingActivityEvents.length && <div className="activity-empty"><span>◫</span><strong>Takvim sakin</strong><small>Topluluğun için ilk etkinliği oluşturabilirsin.</small></div>}
+              </section>
+
+              <section className="activity-card">
+                <header><div><span>◖</span><strong>Şu an seste</strong></div><small>{activeVoiceRooms.reduce((total, item) => total + item.members.length, 0)} kişi</small></header>
+                {activeVoiceRooms.slice(0, 4).map((item) => <button className="activity-action-row" key={item.channel.id} onClick={() => executeCommand(() => chooseChannel(item.channel))}><i>◖</i><span><strong>{item.channel.name}</strong><small>{item.members.map((member) => member.name).slice(0, 3).join(", ")}{item.members.length > 3 ? ` +${item.members.length - 3}` : ""}</small></span><b>Katıl</b></button>)}
+                {!activeVoiceRooms.length && <div className="activity-empty"><span>◖</span><strong>Ses odaları sakin</strong><small>Bir odaya girerek kuzenlerini çağırabilirsin.</small></div>}
+              </section>
+
+              <section className="activity-card activity-later">
+                <header><div><span>☆</span><strong>Sonra Bak</strong></div><button onClick={openBookmarks}>Tümü</button></header>
+                {dueBookmarks.map((item) => <button key={item.id} onClick={() => void jumpToBookmark(item)}><i>!</i><span><strong>{item.message.authorName} · #{item.message.channelName}</strong><small>{item.note || item.message.content.slice(0, 80)}</small></span><b>Git ›</b></button>)}
+                {!dueBookmarks.length && <div className="activity-empty"><span>☆</span><strong>Geciken iş yok</strong><small>Mesajları kaydedip istediğin zamana hatırlatma ekleyebilirsin.</small></div>}
+              </section>
+            </div>
+          </section>
         </div>
       )}
 

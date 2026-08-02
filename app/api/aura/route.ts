@@ -307,14 +307,18 @@ export async function POST(request: Request) {
     }
 
     if (payload.action === "grant") {
-      const username = cleanText(payload.username, { min: 3, max: 24 })
+      const targetValue = cleanText(payload.username, { min: 3, max: 254 })
         .toLocaleLowerCase("en-US")
         .replace(/^@/, "");
+      const targetByEmail = targetValue.includes("@");
+      if (targetByEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(targetValue)) {
+        throw new ApiError(400, "Geçerli bir kullanıcı adı veya e-posta yazmalısın.");
+      }
       const durationDays = validatedDuration(payload.durationDays, true);
       const [target] = await db
         .select()
         .from(profiles)
-        .where(eq(profiles.username, username))
+        .where(targetByEmail ? eq(profiles.email, targetValue) : eq(profiles.username, targetValue))
         .limit(1);
       if (!target) throw new ApiError(404, "Kullanıcı bulunamadı.");
       const [current] = await db
@@ -348,13 +352,14 @@ export async function POST(request: Request) {
     }
 
     if (payload.action === "revoke") {
-      const username = cleanText(payload.username, { min: 3, max: 24 })
+      const targetValue = cleanText(payload.username, { min: 3, max: 254 })
         .toLocaleLowerCase("en-US")
         .replace(/^@/, "");
+      const targetByEmail = targetValue.includes("@");
       const [target] = await db
         .select({ id: profiles.id })
         .from(profiles)
-        .where(eq(profiles.username, username))
+        .where(targetByEmail ? eq(profiles.email, targetValue) : eq(profiles.username, targetValue))
         .limit(1);
       if (!target) throw new ApiError(404, "Kullanıcı bulunamadı.");
       await db.delete(auraMemberships).where(eq(auraMemberships.profileId, target.id));
