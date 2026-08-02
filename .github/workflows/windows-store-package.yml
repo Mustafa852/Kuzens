@@ -1,0 +1,61 @@
+name: Microsoft Store paketini hazirla
+
+on:
+  workflow_dispatch:
+    inputs:
+      identity_name:
+        description: "Partner Center Package/Identity/Name"
+        required: true
+        type: string
+      publisher:
+        description: "Partner Center Package/Identity/Publisher"
+        required: true
+        type: string
+      publisher_display_name:
+        description: "Partner Center Publisher display name"
+        required: true
+        default: "Kuzens"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  store-package:
+    name: Store MSIX
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Kaynak kodu al
+        uses: actions/checkout@v4
+
+      - name: Node.js kur
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Bagimliliklari kur
+        run: npm ci
+
+      - name: Masaustu bagimliliklarini kur
+        run: npm ci --prefix desktop
+
+      - name: Web uygulamasini dogrula
+        run: npm test
+
+      - name: Microsoft Store paketini uret
+        run: npm run desktop:store
+        env:
+          WINDOWS_STORE_IDENTITY_NAME: ${{ inputs.identity_name }}
+          WINDOWS_STORE_PUBLISHER: ${{ inputs.publisher }}
+          WINDOWS_STORE_PUBLISHER_DISPLAY_NAME: ${{ inputs.publisher_display_name }}
+
+      - name: Store paketini indirilebilir yap
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kuzens-Microsoft-Store
+          path: release/store/*.appx
+          if-no-files-found: error
+          retention-days: 14

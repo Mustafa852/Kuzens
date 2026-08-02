@@ -39,6 +39,9 @@ const [
   avatarRoute,
   storageSource,
   resetMembershipMigration,
+  storeBuildSource,
+  storeWorkflowSource,
+  releaseWorkflowSource,
 ] =
   await Promise.all([
     readFile(new URL("../app/KuzensApp.tsx", import.meta.url), "utf8"),
@@ -77,6 +80,9 @@ const [
     readFile(new URL("../app/api/avatar/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../lib/storage.ts", import.meta.url), "utf8"),
     readFile(new URL("../drizzle/0022_reset_native_default_memberships.sql", import.meta.url), "utf8"),
+    readFile(new URL("../desktop/electron-builder.store.cjs", import.meta.url), "utf8"),
+    readFile(new URL("../.github/workflows/windows-store-package.yml", import.meta.url), "utf8"),
+    readFile(new URL("../.github/workflows/windows-release.yml", import.meta.url), "utf8"),
   ]);
 
 const apiRoot = new URL("../app/api/", import.meta.url);
@@ -536,6 +542,19 @@ test("ships an installable shell without caching private application data", () =
   assert.match(serviceWorkerSource, /url\.pathname\.startsWith\("\/api\/"\)\) return/);
   assert.doesNotMatch(serviceWorkerSource, /cache\.put\([^\n]*\/api\//);
   assert.match(layoutSource, /favicon\.svg/);
+});
+
+test("builds a Store-signed distribution path and supports trusted EXE signing", () => {
+  assert.match(packageSource, /desktop:store/);
+  assert.match(storeBuildSource, /WINDOWS_STORE_IDENTITY_NAME/);
+  assert.match(storeBuildSource, /WINDOWS_STORE_PUBLISHER/);
+  assert.match(storeBuildSource, /target: "appx"/);
+  assert.match(storeBuildSource, /languages: \["tr-TR", "en-US"\]/);
+  assert.match(storeWorkflowSource, /Microsoft Store paketini uret/);
+  assert.match(storeWorkflowSource, /actions\/upload-artifact@v4/);
+  assert.match(releaseWorkflowSource, /WIN_CSC_LINK/);
+  assert.match(releaseWorkflowSource, /WIN_CSC_KEY_PASSWORD/);
+  assert.match(appSource, /SmartScreen uyar\u0131s\u0131 olmadan kur/);
 });
 
 test("uses an original Kuzens loading scene and the distinct Nova interface", async () => {

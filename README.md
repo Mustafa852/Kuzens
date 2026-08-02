@@ -9,10 +9,17 @@ Kuzens; topluluklar, metin kanalları, sesli odalar, ekran paylaşımı ve arkad
 
 ## Windows sürümleri
 
-Her sürümde iki dosya üretilir:
+Kuzens'i Windows'a kurmanın önerilen iki yolu vardır:
+
+- **Tarayıcıdan uygulama olarak yükleme (PWA):** `stromv2.com.tr` adresini Edge veya Chrome ile açıp Kuzens ayarlarındaki **Kuzens'i yükle** düğmesine bas. EXE indirilmediği için SmartScreen uyarısı çıkmaz.
+- **Microsoft Store:** Store paketi için otomatik üretim hattı hazırdır. Store yayını tamamlandığında uygulama Microsoft tarafından imzalanır ve SmartScreen uyarısı olmadan kurulur.
+
+GitHub sürümlerinde ayrıca iki doğrudan dağıtım dosyası üretilir:
 
 - `Kuzens-Web-Kurulum-x.y.z.exe`: Küçük kurulum dosyasıdır; gereken uygulama paketini GitHub Release üzerinden indirir ve kurar.
 - `Kuzens-Portable-x.y.z.exe`: Kurulum gerektirmeden doğrudan çalışır.
+
+Doğrudan indirilen EXE dosyaları güvenilir bir kod imzalama sertifikası eklenene kadar Windows tarafından “bilinmeyen yayıncı” olarak gösterilebilir. Bu bir virüs tespiti değildir; Microsoft Store veya güvenilir Authenticode imzası bu dağıtım uyarısını çözer.
 
 Kurulu sürüm, yeni masaüstü sürümlerini GitHub üzerinden denetler. Web arayüzündeki geliştirmeler canlı adresten yüklendiği için ayrıca uygulama güncellemesi gerektirmez.
 

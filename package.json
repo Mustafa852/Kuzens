@@ -13,13 +13,14 @@
     "build": "vinext build",
     "start": "vinext start",
     "test": "npm run build && node --test tests/rendered-html.test.mjs",
-    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
+    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next --ignore-pattern release",
     "db:generate": "drizzle-kit generate",
     "version": "node desktop/sync-version.cjs && git add desktop/package.json",
     "desktop:dev": "electron desktop/main.cjs",
     "desktop:dir": "electron-builder --dir --win",
     "desktop:package": "electron-builder --win nsis portable --publish never",
     "desktop:web-installer": "electron-builder --win nsis-web --publish never",
+    "desktop:store": "electron-builder --config desktop/electron-builder.store.cjs --win appx --publish never",
     "desktop:release": "electron-builder --win nsis-web portable --publish always"
   },
   "dependencies": {
