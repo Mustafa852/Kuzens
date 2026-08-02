@@ -469,4 +469,154 @@ test("blocks abusive messages with configurable and auditable AutoMod rules", ()
 
 test("ships saved-message reminders and device-level voice personalization", () => {
   assert.match(schemaSource, /messageBookmarks/);
-  assert.match(bookmarksRoute, /requir
+  assert.match(bookmarksRoute, /requireMember\(identity, message\.serverId\)/);
+  assert.match(bookmarksRoute, /reminderDue/);
+  assert.match(appSource, /Sonra için kaydet/);
+  assert.match(appSource, /className="modal-card bookmarks-modal"/);
+  assert.match(appSource, /kuzens-member-volumes/);
+  assert.match(appSource, /preferences\.noiseSuppression/);
+  assert.match(appSource, /preferences\.echoCancellation/);
+  assert.match(appSource, /className="member-volume"/);
+});
+
+test("treats user blocks as a channel, notification, and DM boundary", () => {
+  assert.match(messagesRoute, /blockedAuthor/);
+  assert.match(messagesRoute, /blockedProfileIdsFor/);
+  assert.match(notificationsRoute, /blockedProfileIds/);
+  assert.match(directMessagesRoute, /requireConversationUnblocked/);
+  assert.match(directMessagesRoute, /blockedProfileIds/);
+  assert.match(threadsRoute, /blockedProfileIds/);
+  assert.match(appSource, /blocked-message-reveal/);
+});
+
+test("adds bot-free polls with scoped voting and duplicate-vote protection", () => {
+  assert.match(schemaSource, /export const polls/);
+  assert.match(schemaSource, /pollOptions/);
+  assert.match(schemaSource, /pollVotes/);
+  assert.match(pollsRoute, /requireMember/);
+  assert.match(pollsRoute, /checkAutoModeration/);
+  assert.match(pollsRoute, /allowMultiple/);
+  assert.match(pollsRoute, /Bu anket sona erdi/);
+  assert.match(messagesRoute, /totalVotes/);
+  assert.match(appSource, /function PollCard/);
+  assert.match(appSource, /className="modal-card poll-modal"/);
+});
+
+test("keeps message threads persistent, scoped, and moderation-aware", () => {
+  assert.match(schemaSource, /messageThreads/);
+  assert.match(schemaSource, /threadMessages/);
+  assert.match(threadsRoute, /requireMember/);
+  assert.match(threadsRoute, /checkAutoModeration/);
+  assert.match(threadsRoute, /row\.thread\.locked \|\| row\.thread\.archived/);
+  assert.match(threadsRoute, /PERMISSIONS\.manageMessages/);
+  assert.match(messagesRoute, /replyCount/);
+  assert.match(appSource, /className="thread-chip"/);
+  assert.match(appSource, /className="modal-card thread-modal"/);
+  assert.match(appSource, /threadDraftKey/);
+});
+
+test("supports accessible channel ordering, favorites, and complete deletion cleanup", () => {
+  assert.match(appSource, /kuzens-favorite-channels/);
+  assert.match(appSource, /FAVORİLERİM/);
+  assert.match(appSource, /async function reorderChannel/);
+  assert.match(appSource, /Yukarı taşı/);
+  assert.match(serversRoute, /messageBookmarks/);
+  assert.match(serversRoute, /threadMessages/);
+  assert.match(serversRoute, /pollVotes/);
+  assert.match(serversRoute, /eventRsvps/);
+});
+
+test("provides a permissioned and persistent new-member guide", () => {
+  assert.match(schemaSource, /serverGuides/);
+  assert.match(schemaSource, /serverGuideProgress/);
+  assert.match(serverGuideRoute, /requirePermission\(profile, PERMISSIONS\.manageServer/);
+  assert.match(serverGuideRoute, /GUIDE_STEPS/);
+  assert.match(serverGuideRoute, /completedAt/);
+  assert.match(appSource, /className="modal-card guide-modal"/);
+  assert.match(appSource, /Başlangıç rehberi/);
+});
+
+test("ships an installable shell without caching private application data", () => {
+  assert.match(manifestSource, /display:\s*"standalone"/);
+  assert.match(manifestSource, /categories:\s*\["social", "communication"\]/);
+  assert.match(serviceWorkerSource, /skipWaiting/);
+  assert.match(appSource, /display-mode: standalone/);
+  assert.match(serviceWorkerSource, /url\.pathname\.startsWith\("\/api\/"\)\) return/);
+  assert.doesNotMatch(serviceWorkerSource, /cache\.put\([^\n]*\/api\//);
+  assert.match(serviceWorkerSource, /caches\.match\("\/offline\.html"\)/);
+  assert.match(offlineSource, /Kuzens burada, internetin biraz geride kaldı/);
+  assert.match(layoutSource, /favicon\.svg/);
+});
+
+test("builds a Store-signed distribution path and supports trusted EXE signing", () => {
+  assert.match(packageSource, /desktop:store/);
+  assert.match(storeBuildSource, /WINDOWS_STORE_IDENTITY_NAME/);
+  assert.match(storeBuildSource, /WINDOWS_STORE_PUBLISHER/);
+  assert.match(storeBuildSource, /target: "appx"/);
+  assert.match(storeBuildSource, /languages: \["tr-TR", "en-US"\]/);
+  assert.match(storeWorkflowSource, /Microsoft Store paketini uret/);
+  assert.match(storeWorkflowSource, /actions\/upload-artifact@v4/);
+  assert.match(releaseWorkflowSource, /WIN_CSC_LINK/);
+  assert.match(releaseWorkflowSource, /WIN_CSC_KEY_PASSWORD/);
+  assert.match(appSource, /SmartScreen uyar\u0131s\u0131 olmadan kur/);
+});
+
+test("uses an original Kuzens loading scene and the distinct Nova interface", async () => {
+  const loadingImage = await readFile(new URL("../public/kuzens-loading-v1.webp", import.meta.url));
+  assert.ok(loadingImage.byteLength > 100_000);
+  assert.match(appSource, /kuzens-loading-v1\.webp/);
+  assert.match(appSource, /Kuzenlerinle buluşuyorsun/);
+  assert.match(appSource, /app-shell app-shell-v3/);
+  assert.match(appSource, /community-hub-card/);
+  assert.match(appStyles, /Kuzens Nova/);
+  assert.match(appStyles, /\.kuzens-splash/);
+});
+
+test("fetches rich link metadata server-side without becoming an open proxy", () => {
+  assert.match(schemaSource, /linkPreviews/);
+  assert.match(linkPreviewRoute, /safeRemoteUrl/);
+  assert.match(linkPreviewRoute, /isPrivateIpv4/);
+  assert.match(linkPreviewRoute, /store\.steampowered\.com\/api\/appdetails/);
+  assert.match(linkPreviewRoute, /youtube\.com\/oembed/);
+  assert.match(linkPreviewRoute, /og:title/);
+  assert.match(linkPreviewRoute, /linkPreviews\.imageUrl/);
+  assert.match(linkPreviewRoute, /IMAGE_LIMIT/);
+  assert.match(linkPreviewRoute, /enforceRateLimit/);
+  assert.doesNotMatch(appSource, /dangerouslySetInnerHTML/);
+});
+
+test("stores validated profile photos privately and renders real presence states", () => {
+  assert.match(schemaSource, /avatarKey/);
+  assert.match(storageSource, /UPLOADS/);
+  assert.match(profileRoute, /webp\|png\|jpeg/);
+  assert.match(profileRoute, /600_000/);
+  assert.match(profileRoute, /getUploads\(\)\.put/);
+  assert.match(avatarRoute, /requireIdentity/);
+  assert.match(avatarRoute, /requireProfile/);
+  assert.match(appSource, /selectProfileAvatar/);
+  assert.match(appSource, /profileAvatarDataUrl/);
+  assert.match(appStyles, /\.presence-dnd/);
+  assert.match(appStyles, /\.presence-idle/);
+  assert.match(appStyles, /\.presence-invisible/);
+});
+
+test("keeps mobile authentication inside the viewport", () => {
+  assert.match(authStyles, /overflow-x:\s*hidden/);
+  assert.match(authStyles, /\.auth-visual,[\s\S]*\.auth-card\s*\{[\s\S]*min-width:\s*0/);
+  assert.match(authStyles, /env\(safe-area-inset-bottom\)/);
+});
+
+test("preserves failed messages and isolates device drafts per account", () => {
+  assert.match(appSource, /`kuzens-drafts:\$\{profile\.id\}`/);
+  assert.match(appSource, /`kuzens-member-volumes:\$\{profile\.id\}`/);
+  assert.match(appSource, /`kuzens-favorite-channels:\$\{profile\.id\}`/);
+  assert.match(appSource, /function readLocalDrafts/);
+  assert.match(appSource, /function writeLocalJson/);
+  assert.match(appSource, /autoGainControl:\s*saved\.autoGainControl === true/);
+  assert.match(appSource, /Taslağın korundu/);
+  assert.match(appSource, /failedFiles\.length/);
+  assert.match(appSource, /local-\$\{crypto\.randomUUID\(\)\}/);
+  assert.match(appSource, /className="draft-badge">Taslak/);
+  assert.match(appSource, /className=\{`sync-indicator sync-\$\{syncState\}`\}/);
+  assert.match(appStyles, /\.sync-indicator\.sync-offline/);
+});
