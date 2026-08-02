@@ -115,18 +115,19 @@
   border: 1px solid rgba(255, 255, 255, .07);
   border-radius: 12px;
   display: flex;
+  flex-wrap: wrap;
   gap: 12px;
   margin: 0 0 12px;
   padding: 9px 11px;
 }
 
-.voice-processing-strip > div {
+.voice-status-chips {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
 }
 
-.voice-processing-strip > div span,
+.voice-status-chips span,
 .voice-processing-summary span {
   background: rgba(255, 255, 255, .045);
   border: 1px solid rgba(255, 255, 255, .07);
@@ -136,7 +137,7 @@
   padding: 5px 8px;
 }
 
-.voice-processing-strip > div span.active,
+.voice-status-chips span.active,
 .voice-processing-summary span.active {
   background: rgba(64, 218, 159, .1);
   border-color: rgba(64, 218, 159, .28);
@@ -154,6 +155,10 @@
   color: #777287;
   font-size: 8px;
   letter-spacing: .08em;
+}
+
+.voice-processing-strip > label.detecting small {
+  color: #6ff0bd;
 }
 
 .voice-processing-strip > label i {
@@ -174,19 +179,27 @@
   transition: width .1s linear;
 }
 
-.voice-processing-strip > button {
-  background: rgba(139, 92, 246, .1);
-  border: 1px solid rgba(139, 92, 246, .24);
-  border-radius: 8px;
-  color: #aaa2b8;
-  font-size: 9px;
-  padding: 7px 9px;
+.voice-preset-switch {
+  display: inline-flex;
+  padding: 3px;
+  border: 1px solid rgba(255, 255, 255, .07);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, .025);
 }
 
-.voice-processing-strip > button.active {
-  background: rgba(139, 92, 246, .2);
-  border-color: rgba(170, 135, 255, .48);
-  color: #e5dbff;
+.voice-preset-switch button {
+  padding: 5px 7px;
+  border-radius: 6px;
+  color: #777287;
+  background: transparent;
+  font-size: 8px;
+  font-weight: 800;
+}
+
+.voice-preset-switch button:hover,
+.voice-preset-switch button.active {
+  color: #f3edff;
+  background: rgba(139, 92, 246, .22);
 }
 
 .voice-processing-summary {
@@ -241,6 +254,13 @@
   .voice-processing-strip { align-items: stretch; flex-direction: column; }
   .voice-processing-strip > label { margin-left: 0; }
   .voice-processing-strip > label i { flex: 1; width: auto; }
+  .voice-preset-switch { width: 100%; }
+  .voice-preset-switch button { flex: 1; }
+  .voice-preset-cards { grid-template-columns: 1fr; }
+  .voice-preset-cards button { min-height: 72px; }
+  .input-sensitivity-card header { align-items: flex-start; }
+  .microphone-test { grid-template-columns: 1fr; }
+  .microphone-test button { width: 100%; }
 }
 
 .app-shell button {
@@ -3195,6 +3215,109 @@
   color: #675f70;
   font-size: 8px;
 }
+
+.voice-preset-cards {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+  margin-bottom: 12px;
+}
+
+.voice-preset-cards button {
+  display: grid;
+  min-height: 94px;
+  align-content: start;
+  gap: 4px;
+  padding: 11px;
+  border: 1px solid #2d2835;
+  border-radius: 11px;
+  color: #8a8293;
+  background: #100e14;
+  text-align: left;
+}
+
+.voice-preset-cards button:hover,
+.voice-preset-cards button.active {
+  border-color: rgba(156, 124, 255, .46);
+  background: linear-gradient(145deg, rgba(128, 80, 225, .16), rgba(24, 21, 31, .82));
+}
+
+.voice-preset-cards button > span {
+  color: #9f7cff;
+  font-size: 16px;
+}
+
+.voice-preset-cards strong {
+  color: #e5dfec;
+  font-size: 11px;
+}
+
+.voice-preset-cards small {
+  color: #746d7e;
+  font-size: 8px;
+  line-height: 1.45;
+}
+
+.input-sensitivity-card {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 11px;
+  border: 1px solid #2a2531;
+  border-radius: 10px;
+  background: #100e14;
+}
+
+.input-sensitivity-card header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.input-sensitivity-card header > span {
+  display: grid;
+  gap: 2px;
+}
+
+.input-sensitivity-card strong { color: #c7c0cf; font-size: 10px; }
+.input-sensitivity-card small { color: #706979; font-size: 8px; line-height: 1.45; }
+.input-sensitivity-card header label { display: flex; align-items: center; gap: 6px; color: #a79caf; font-size: 8px; font-weight: 750; }
+.input-sensitivity-card header label input { width: 14px; height: 14px; accent-color: #8157e3; }
+.input-sensitivity-card > input[type="range"] { width: 100%; accent-color: #8f68ef; }
+.input-sensitivity-card > input[type="range"]:disabled { opacity: .38; }
+.input-sensitivity-card > div { display: flex; align-items: center; justify-content: space-between; color: #696272; font-size: 8px; }
+.input-sensitivity-card > div b { color: #bfaeff; font-size: 9px; }
+
+.voice-setting-warning {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 184, 96, .2);
+  border-radius: 8px;
+  color: #d8ad76;
+  background: rgba(255, 165, 69, .06);
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.microphone-test {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  margin-top: 10px;
+  padding: 10px 11px;
+  border: 1px solid #2a2531;
+  border-radius: 10px;
+  background: #100e14;
+}
+
+.microphone-test > div { display: grid; gap: 2px; }
+.microphone-test strong { color: #c7c0cf; font-size: 10px; }
+.microphone-test small { color: #706979; font-size: 8px; }
+.microphone-test button { min-width: 94px; padding: 8px 10px; border: 1px solid rgba(139, 92, 246, .3); border-radius: 8px; color: #d9cbff; background: rgba(139, 92, 246, .12); font-size: 9px; font-weight: 750; }
+.microphone-test.recording button { color: #6ff0bd; border-color: rgba(64, 218, 159, .28); background: rgba(64, 218, 159, .08); }
+.microphone-test audio { grid-column: 1 / -1; width: 100%; height: 34px; }
 
 .font-size-picker {
   display: grid;
@@ -8916,6 +9039,14 @@
   .copy-fallback-modal { padding: 24px 18px 18px; }
   .copy-invite-code strong { font-size: 16px; }
   .copy-fallback-actions { display: grid; grid-template-columns: 1fr 1fr; }
+}
+
+@media (max-width: 760px) {
+  .voice-preset-cards { grid-template-columns: 1fr; }
+  .voice-preset-cards button { min-height: 72px; }
+  .input-sensitivity-card header { align-items: flex-start; }
+  .microphone-test { grid-template-columns: 1fr; }
+  .microphone-test button { width: 100%; }
 }
 
 @media (prefers-reduced-motion: reduce) {

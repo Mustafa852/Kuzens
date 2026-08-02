@@ -316,7 +316,11 @@ type AppPreferences = {
   noiseSuppression: boolean;
   autoGainControl: boolean;
   noiseFilterStrength: "balanced" | "strong";
+  automaticInputSensitivity: boolean;
+  inputSensitivityDb: number;
 };
+
+type VoicePreset = "clear" | "balanced" | "studio";
 
 type DirectConversation = {
   id: string;
@@ -449,8 +453,10 @@ const defaultPreferences: AppPreferences = {
   inputDeviceId: "",
   echoCancellation: true,
   noiseSuppression: true,
-  autoGainControl: true,
+  autoGainControl: false,
   noiseFilterStrength: "strong",
+  automaticInputSensitivity: true,
+  inputSensitivityDb: -42,
 };
 
 type VoiceProcessingStatus = {
@@ -493,6 +499,51 @@ function audioConstraintsFor(preferences: AppPreferences): MediaTrackConstraints
     constraints.voiceIsolation = preferences.noiseSuppression;
   }
   return constraints;
+}
+
+function voicePresetFor(preferences: AppPreferences): VoicePreset | "custom" {
+  if (
+    preferences.echoCancellation &&
+    preferences.noiseSuppression &&
+    !preferences.autoGainControl &&
+    preferences.noiseFilterStrength === "strong"
+  ) return "clear";
+  if (
+    preferences.echoCancellation &&
+    preferences.noiseSuppression &&
+    !preferences.autoGainControl &&
+    preferences.noiseFilterStrength === "balanced"
+  ) return "balanced";
+  if (
+    !preferences.echoCancellation &&
+    !preferences.noiseSuppression &&
+    !preferences.autoGainControl
+  ) return "studio";
+  return "custom";
+}
+
+function preferencesForVoicePreset(
+  current: AppPreferences,
+  preset: VoicePreset,
+): AppPreferences {
+  if (preset === "studio") {
+    return {
+      ...current,
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: false,
+      noiseFilterStrength: "balanced",
+      automaticInputSensitivity: false,
+    };
+  }
+  return {
+    ...current,
+    echoCancellation: true,
+    noiseSuppression: true,
+    autoGainControl: false,
+    noiseFilterStrength: preset === "clear" ? "strong" : "balanced",
+    automaticInputSensitivity: true,
+  };
 }
 
 function processingStatusFor(
@@ -552,31 +603,52 @@ async function prepareVoiceInput(preferences: AppPreferences): Promise<PreparedV
     const source = context.createMediaStreamSource(rawStream);
     const highPass = context.createBiquadFilter();
     highPass.type = "highpass";
-    highPass.frequency.setValueAtTime(90, context.currentTime);
+    highPass.frequency.setValueAtTime(105, context.currentTime);
     highPass.Q.setValueAtTime(0.72, context.currentTime);
 
+    const lowPass = context.createBiquadFilter();
+    lowPass.type = "lowpass";
+    lowPass.frequency.setValueAtTime(
+      preferences.noiseFilterStrength === "strong" ? 8_500 : 10_500,
+      context.currentTime,
+    );
+    lowPass.Q.setValueAtTime(0.68, context.currentTime);
+
+    const presence = context.createBiquadFilter();
+    presence.type = "peaking";
+    presence.frequency.setValueAtTime(2_800, context.currentTime);
+    presence.Q.setValueAtTime(0.8, context.currentTime);
+    presence.gain.setValueAtTime(1.4, context.currentTime);
+
     const compressor = context.createDynamicsCompressor();
-    compressor.threshold.setValueAtTime(-25, context.currentTime);
-    compressor.knee.setValueAtTime(18, context.currentTime);
-    compressor.ratio.setValueAtTime(3.5, context.currentTime);
-    compressor.attack.setValueAtTime(0.004, context.currentTime);
-    compressor.release.setValueAtTime(0.18, context.currentTime);
+    compressor.threshold.setValueAtTime(-20, context.currentTime);
+    compressor.knee.setValueAtTime(14, context.currentTime);
+    compressor.ratio.setValueAtTime(2.4, context.currentTime);
+    compressor.attack.setValueAtTime(0.008, context.currentTime);
+    compressor.release.setValueAtTime(0.14, context.currentTime);
     const destination = context.createMediaStreamDestination();
 
     source.connect(highPass);
-    let tail: AudioNode = highPass;
+    highPass.connect(lowPass);
+    let tail: AudioNode = lowPass;
     if (context.audioWorklet && typeof AudioWorkletNode !== "undefined") {
       await context.audioWorklet.addModule("/audio/kuzens-noise-gate.js");
+      const manualThreshold = Math.pow(10, preferences.inputSensitivityDb / 20);
       const gate = new AudioWorkletNode(context, "kuzens-noise-gate", {
         parameterData: {
-          threshold: preferences.noiseFilterStrength === "strong" ? 0.006 : 0.0035,
-          floor: preferences.noiseFilterStrength === "strong" ? 0.035 : 0.1,
+          threshold: preferences.automaticInputSensitivity
+            ? preferences.noiseFilterStrength === "strong" ? 0.004 : 0.003
+            : manualThreshold,
+          floor: preferences.noiseFilterStrength === "strong" ? 0.004 : 0.025,
+          adaptive: preferences.automaticInputSensitivity ? 1 : 0,
+          noiseMultiplier: preferences.noiseFilterStrength === "strong" ? 2.7 : 2.05,
         },
       });
       tail.connect(gate);
       tail = gate;
     }
-    tail.connect(compressor);
+    tail.connect(presence);
+    presence.connect(compressor);
     compressor.connect(destination);
 
     const outputTrack = destination.stream.getAudioTracks()[0];
@@ -1351,6 +1423,8 @@ export function KuzensApp() {
   const [connectionQuality, setConnectionQuality] = useState<"good" | "fair" | "poor">("good");
   const [voiceProcessingStatus, setVoiceProcessingStatus] = useState<VoiceProcessingStatus>(() => processingStatusFor());
   const [microphoneLevel, setMicrophoneLevel] = useState(0);
+  const [microphoneTestState, setMicrophoneTestState] = useState<"idle" | "recording" | "ready">("idle");
+  const [microphoneTestUrl, setMicrophoneTestUrl] = useState("");
   const [cameraEnabled, setCameraEnabled] = useState(false);
   const [voiceTextDraft, setVoiceTextDraft] = useState("");
   const [pendingAttachments, setPendingAttachments] = useState<File[]>([]);
@@ -2167,9 +2241,19 @@ export function KuzensApp() {
           inputDeviceId: typeof saved.inputDeviceId === "string" ? saved.inputDeviceId : "",
           echoCancellation: saved.echoCancellation !== false,
           noiseSuppression: saved.noiseSuppression !== false,
-          autoGainControl: saved.autoGainControl !== false,
+          autoGainControl:
+            typeof saved.automaticInputSensitivity === "boolean"
+              ? saved.autoGainControl === true
+              : false,
           noiseFilterStrength:
             saved.noiseFilterStrength === "balanced" ? "balanced" : "strong",
+          automaticInputSensitivity: saved.automaticInputSensitivity !== false,
+          inputSensitivityDb:
+            typeof saved.inputSensitivityDb === "number" &&
+            saved.inputSensitivityDb >= -60 &&
+            saved.inputSensitivityDb <= -20
+              ? saved.inputSensitivityDb
+              : -42,
         });
       } catch {
         setPreferences(defaultPreferences);
@@ -2183,6 +2267,10 @@ export function KuzensApp() {
     if (!preferencesReady.current) return;
     localStorage.setItem("kuzens-preferences", JSON.stringify(preferences));
   }, [preferences]);
+
+  useEffect(() => () => {
+    if (microphoneTestUrl) URL.revokeObjectURL(microphoneTestUrl);
+  }, [microphoneTestUrl]);
 
   useEffect(() => {
     voiceBitrateRef.current = connectedVoiceBitrate;
@@ -2721,22 +2809,23 @@ export function KuzensApp() {
 
   async function toggleCleanVoice() {
     const enabled = !(preferences.echoCancellation && preferences.noiseSuppression);
+    await applyVoicePreset(enabled ? "clear" : "studio");
+  }
+
+  async function applyVoicePreset(preset: VoicePreset) {
     const previous = preferences;
-    const nextPreferences: AppPreferences = {
-      ...preferences,
-      echoCancellation: enabled,
-      noiseSuppression: enabled,
-      autoGainControl: enabled ? true : preferences.autoGainControl,
-    };
+    const nextPreferences = preferencesForVoicePreset(preferences, preset);
     setPreferences(nextPreferences);
     try {
       if (voiceConnected && canSpeakInConnectedVoice) {
         await replaceMicrophoneInput(nextPreferences);
       }
       setToast({
-        text: enabled
-          ? "Temiz Ses açıldı: gürültü, yankı ve Kuzens güçlü filtresi etkin."
-          : "Temiz Ses kapatıldı.",
+        text: preset === "clear"
+          ? "Temiz profil etkin: fan, klavye ve yankı daha güçlü bastırılıyor."
+          : preset === "balanced"
+            ? "Dengeli profil etkin: konuşma doğal kalırken sabit gürültü azaltılıyor."
+            : "Stüdyo profili etkin: ham mikrofon sesi, müzik ve enstrümanlar korunuyor.",
         tone: "success",
       });
     } catch {
@@ -4317,6 +4406,45 @@ export function KuzensApp() {
       setAudioDevices(devices.filter((device) => device.kind === "audioinput"));
     } catch {
       setAudioDevices([]);
+    }
+  }
+
+  async function testMicrophone() {
+    if (microphoneTestState === "recording") return;
+    if (typeof MediaRecorder === "undefined") {
+      setToast({ text: "Bu tarayıcı mikrofon kaydı testini desteklemiyor.", tone: "danger" });
+      return;
+    }
+    setMicrophoneTestState("recording");
+    let prepared: PreparedVoiceInput | null = null;
+    try {
+      prepared = await prepareVoiceInput(preferences);
+      const chunks: Blob[] = [];
+      const preferredType = "audio/webm;codecs=opus";
+      const recorder = new MediaRecorder(
+        prepared.stream,
+        MediaRecorder.isTypeSupported(preferredType) ? { mimeType: preferredType } : undefined,
+      );
+      recorder.addEventListener("dataavailable", (event) => {
+        if (event.data.size) chunks.push(event.data);
+      });
+      recorder.addEventListener("stop", () => {
+        const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
+        const nextUrl = URL.createObjectURL(blob);
+        setMicrophoneTestUrl(nextUrl);
+        setMicrophoneTestState("ready");
+        if (prepared?.pipeline) void disposeVoiceAudioPipeline(prepared.pipeline);
+        else prepared?.stream.getTracks().forEach((track) => track.stop());
+      }, { once: true });
+      recorder.start(100);
+      window.setTimeout(() => {
+        if (recorder.state !== "inactive") recorder.stop();
+      }, 5_000);
+    } catch {
+      if (prepared?.pipeline) await disposeVoiceAudioPipeline(prepared.pipeline);
+      else prepared?.stream.getTracks().forEach((track) => track.stop());
+      setMicrophoneTestState("idle");
+      setToast({ text: "Mikrofon testi başlatılamadı. Mikrofon iznini ve giriş aygıtını kontrol et.", tone: "danger" });
     }
   }
 
@@ -6211,23 +6339,21 @@ export function KuzensApp() {
             </div>
 
             <div className="voice-processing-strip" aria-label="Mikrofon işleme durumu">
-              <div>
+              <div className="voice-status-chips">
                 <span className={voiceProcessingStatus.noiseSuppression ? "active" : ""}>Gürültü engelleme</span>
                 <span className={voiceProcessingStatus.echoCancellation ? "active" : ""}>Yankı engelleme</span>
                 <span className={voiceProcessingStatus.voiceIsolation ? "active" : ""}>Ses yalıtımı</span>
                 <span className={voiceProcessingStatus.enhancedNoiseFilter ? "active" : ""}>Kuzens güçlü filtre</span>
               </div>
-              <label title="Mikrofon giriş seviyesi">
-                <small>MİKROFON</small>
+              <div className="voice-preset-switch" aria-label="Ses profili">
+                <button type="button" className={voicePresetFor(preferences) === "clear" ? "active" : ""} onClick={() => void applyVoicePreset("clear")}>Temiz</button>
+                <button type="button" className={voicePresetFor(preferences) === "balanced" ? "active" : ""} onClick={() => void applyVoicePreset("balanced")}>Dengeli</button>
+                <button type="button" className={voicePresetFor(preferences) === "studio" ? "active" : ""} onClick={() => void applyVoicePreset("studio")}>Stüdyo</button>
+              </div>
+              <label className={microphoneLevel > 8 ? "detecting" : ""} title="Mikrofon giriş seviyesi">
+                <small>{microphoneLevel > 8 ? "KONUŞMA" : "SESSİZ"}</small>
                 <i><b style={{ width: `${microphoneLevel}%` }} /></i>
               </label>
-              <button
-                type="button"
-                className={preferences.echoCancellation && preferences.noiseSuppression ? "active" : ""}
-                onClick={() => void toggleCleanVoice()}
-              >
-                ✦ Temiz Ses {preferences.echoCancellation && preferences.noiseSuppression ? "açık" : "kapalı"}
-              </button>
             </div>
 
             <div className="speaker-grid">
@@ -8222,6 +8348,17 @@ export function KuzensApp() {
 
             <section className="preference-section">
               <div className="preference-heading"><span>SES VE MİKROFON</span><small>Tarayıcı destekli ses işleme</small></div>
+              <div className="voice-preset-cards" aria-label="Mikrofon profili">
+                <button type="button" className={voicePresetFor(preferences) === "clear" ? "active" : ""} onClick={() => setPreferences((current) => preferencesForVoicePreset(current, "clear"))}>
+                  <span>✦</span><strong>Temiz</strong><small>Fan, klavye ve yankı için en güçlü konuşma filtresi.</small>
+                </button>
+                <button type="button" className={voicePresetFor(preferences) === "balanced" ? "active" : ""} onClick={() => setPreferences((current) => preferencesForVoicePreset(current, "balanced"))}>
+                  <span>◈</span><strong>Dengeli</strong><small>Gürültüyü azaltır, ses tonunu daha doğal korur.</small>
+                </button>
+                <button type="button" className={voicePresetFor(preferences) === "studio" ? "active" : ""} onClick={() => setPreferences((current) => preferencesForVoicePreset(current, "studio"))}>
+                  <span>♫</span><strong>Stüdyo</strong><small>Müzik ve kaliteli mikrofon için işlemesiz, doğal ses.</small>
+                </button>
+              </div>
               <label className="settings-field">
                 <span>Giriş aygıtı</span>
                 <select
@@ -8254,6 +8391,31 @@ export function KuzensApp() {
                 </select>
                 <small>Güçlü mod, tarayıcı filtresine Kuzens gürültü kapısı ve konuşma kompresörü ekler.</small>
               </label>
+              <div className="input-sensitivity-card">
+                <header>
+                  <span><strong>Giriş hassasiyeti</strong><small>Konuşman ile odadaki gürültü arasındaki sınır.</small></span>
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={preferences.automaticInputSensitivity}
+                      onChange={(event) => setPreferences((current) => ({ ...current, automaticInputSensitivity: event.target.checked }))}
+                    />
+                    <i /> Otomatik
+                  </label>
+                </header>
+                <input
+                  type="range"
+                  min={-60}
+                  max={-20}
+                  step={1}
+                  value={preferences.inputSensitivityDb}
+                  disabled={preferences.automaticInputSensitivity}
+                  onChange={(event) => setPreferences((current) => ({ ...current, inputSensitivityDb: Number(event.target.value) }))}
+                  aria-label="Mikrofon giriş hassasiyeti"
+                />
+                <div><span>Daha hassas</span><b>{preferences.automaticInputSensitivity ? "Ortamı öğreniyor" : `${preferences.inputSensitivityDb} dB`}</b><span>Daha az hassas</span></div>
+                <small>Fan veya klavye hâlâ duyuluyorsa otomatiği kapatıp değeri -35 dB yönüne getir. Sesin kesiliyorsa -50 dB yönüne getir.</small>
+              </div>
               <div className="preference-toggles">
                 <label>
                   <span><strong>Bas-konuş</strong><small>Boşluk tuşuna basılı tuttuğunda mikrofon açılır.</small></span>
@@ -8300,11 +8462,22 @@ export function KuzensApp() {
                   <i />
                 </label>
               </div>
+              {preferences.autoGainControl && (
+                <p className="voice-setting-warning">Otomatik kazanç sessiz ortamlarda fan ve klavye sesini büyütebilir. Sorun yaşıyorsan kapalı bırakman önerilir.</p>
+              )}
               <div className="voice-processing-summary">
                 <span className={preferences.noiseSuppression ? "active" : ""}>✦ Gürültü filtresi {preferences.noiseSuppression ? "açık" : "kapalı"}</span>
                 <span className={preferences.echoCancellation ? "active" : ""}>↻ Yankı kalkanı {preferences.echoCancellation ? "açık" : "kapalı"}</span>
                 <span className={preferences.noiseSuppression ? "active" : ""}>◈ Ek filtre {preferences.noiseFilterStrength === "strong" ? "güçlü" : "dengeli"}</span>
+                <span className={preferences.automaticInputSensitivity ? "active" : ""}>⌁ Eşik {preferences.automaticInputSensitivity ? "uyarlanabilir" : `${preferences.inputSensitivityDb} dB`}</span>
                 {voiceConnected && <small>Değişiklikler kaydedildiğinde aktif görüşmeye anında uygulanır.</small>}
+              </div>
+              <div className={`microphone-test ${microphoneTestState}`}>
+                <div><strong>Mikrofon testi</strong><small>Beş saniye kaydeder; ses cihazından dışarı çıkmaz.</small></div>
+                <button type="button" disabled={microphoneTestState === "recording"} onClick={() => void testMicrophone()}>
+                  {microphoneTestState === "recording" ? "Dinleniyor…" : microphoneTestState === "ready" ? "Yeniden kaydet" : "Testi başlat"}
+                </button>
+                {microphoneTestUrl && <audio controls src={microphoneTestUrl}>Tarayıcın ses oynatmayı desteklemiyor.</audio>}
               </div>
               {preferences.pushToTalk && (
                 <div className={`ptt-preview ${pttPressed ? "active" : ""}`}>

@@ -372,10 +372,17 @@ test("supports advanced search, accessibility controls, and push-to-talk", () =>
   assert.match(appSource, /noiseFilterStrength/);
   assert.match(appSource, /configureAudioSender/);
   assert.match(appSource, /latency = \{ ideal: 0\.01 \}/);
+  assert.match(appSource, /automaticInputSensitivity/);
+  assert.match(appSource, /inputSensitivityDb/);
+  assert.match(appSource, /autoGainControl: false/);
+  assert.match(appSource, /voicePresetFor/);
+  assert.match(appSource, /Mikrofon testi/);
   assert.match(appSource, /setInterval\(\(\) => void pollSignals\(\), 650\)/);
   assert.match(appSource, /if \(polling \|\| stopped\) return/);
   assert.match(noiseGateSource, /registerProcessor\("kuzens-noise-gate"/);
-  assert.match(noiseGateSource, /this\.holdFrames = 24/);
+  assert.match(noiseGateSource, /this\.noiseFloor = 0\.0025/);
+  assert.match(noiseGateSource, /this\.holdFrames = 52/);
+  assert.match(noiseGateSource, /noiseMultiplier/);
   assert.match(appSource, /replaceMicrophoneInput/);
   assert.match(appSource, /Temiz Ses/);
   assert.match(appSource, /microphoneLevel/);
